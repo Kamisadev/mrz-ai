@@ -87,11 +87,36 @@ budget for an identical result.
 If a pod pairs a fast GPU with few vCPUs, lower `dpi` first (it scales everything) before
 reaching for a pre-rendered cache.
 
-## The limit of all of this
+## One external check, and it passes
 
-Every check in `notebooks/01_synthetic_preview.ipynb` grades the generator against itself.
-They prove the labels are ICAO-correct, the alphabet is covered, the pipeline is fast and
-reproducible — and say nothing about whether any of it resembles a real passport.
+Almost every check here grades the generator against its own definition of correct. The
+exception is worth its weight: **PassportEye** — a stock MRZ reader built for real
+passports, which knows nothing about this code — parses our renders.
+
+| severity | MRZ found | avg valid_score | field accuracy |
+| --- | --- | --- | --- |
+| 0.0 | 12/12 | 81.1 | 91.7% |
+| 0.2 | 12/12 | 92.0 | 98.6% |
+| 0.4 | 12/12 | 89.0 | 97.2% |
+
+A reader trained on real documents reading our synthetic ones at 97%+ is real evidence
+that the glyph shapes, the 2.54mm pitch and the contrast are passport-like rather than
+merely self-consistent. Had it failed on the pristine render, there would have been a
+rendering flaw silently capping Phase 2 accuracy that no internal test could ever surface.
+
+Note the shape of that table: **severity 0.0 reads *worse* than 0.2.** The pristine
+render — flat 255 paper, uniform ink, no texture — is harder for a real reader than a
+mildly degraded one. That is a small, direct confirmation that a flat background is the
+tell of a synthetic sample, and a reason not to treat severity 0 as the "realistic" case.
+
+Reproduce it with the optional last cell of the preview notebook. It needs tesseract
+(`brew install tesseract`), so it is not part of the test suite.
+
+## The limit that remains
+
+PassportEye tells us the render is legible to something built for real passports. It does
+not tell us the *degradations* resemble real photographs — glare, wear and phone optics are
+still our invention, and they are most of what severity does.
 
 The gate is your eyes on the contact sheet, and eventually 50–100 real images held out for
 measurement only. Until then, Phase 2's accuracy numbers are unvalidated.

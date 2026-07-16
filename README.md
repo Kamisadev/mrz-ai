@@ -44,8 +44,13 @@ the cell stays paste-and-run and the same code path is testable locally.
 
 There are no real passport images in this project. Everything the model learns
 comes from the synthetic engine, so the synthetic-to-real gap is the dominant
-risk and no internal metric can measure it — synthetic evaluation only grades
-the generator against itself.
+risk and almost no internal metric can measure it — synthetic evaluation mostly
+grades the generator against itself.
+
+One external check does exist and passes: PassportEye, a stock MRZ reader built
+for real passports, reads our synthetic renders at 12/12 detection and ~97% field
+accuracy (`docs/synthetic.md`). That says the glyphs and pitch are passport-like.
+It does not say our glare, wear and blur resemble real photographs.
 
 Two mitigations: over-randomize the domain rather than under, and acquire a
 held-out set of 50–100 real images for measurement only, never for training.
