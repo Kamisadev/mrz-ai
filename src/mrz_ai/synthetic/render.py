@@ -19,7 +19,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from ..parser import fields as F
-from ..parser.charset import is_mrz_char
+from ..parser.charset import ALPHABET, is_mrz_char
 from .geometry import PageGeometry, mm_to_px
 
 FONT_PATH = Path(__file__).resolve().parents[3] / "assets" / "fonts" / "OCR-B.ttf"
@@ -78,6 +78,24 @@ def font_size_for_cap_height(cap_height_px: float, path: str = str(FONT_PATH)) -
     return max(1, round(probe * cap_height_px / measured))
 
 
+@lru_cache(maxsize=16)
+def ink_extent(size_px: int, path: str = str(FONT_PATH)) -> tuple[float, float]:
+    """How far the alphabet's ink reaches above and below the baseline, in pixels.
+
+    Cap height is not the answer. OCR-B's digits are taller than its capitals —
+    '0' and '8' overshoot 'H' by three pixels at 300dpi — so a box sized to the
+    cap height clips the top off every digit. Since these boxes are the ground
+    truth the recognizer crops with, that would train it on mutilated glyphs.
+    Measure the real extent across every character we can render instead.
+    """
+    font = load_font(size_px, path)
+    boxes = [font.getbbox(char) for char in ALPHABET]
+    baseline = font.getbbox("H")[3]  # PIL reports bboxes from a common origin
+    above = max(baseline - box[1] for box in boxes)
+    below = max(box[3] - baseline for box in boxes)
+    return float(above), float(below)
+
+
 def render_mrz(
     mrz: str,
     *,
@@ -108,18 +126,21 @@ def render_mrz(
     cap_height = mm_to_px(geometry.cap_height_mm, dpi)
     padding = mm_to_px(padding_mm, dpi)
 
+    font_size = font_size_for_cap_height(cap_height)
+    font = load_font(font_size)
+    above, below = ink_extent(font_size)
+
     width = round(F.LINE_LENGTH * pitch + 2 * padding)
-    height = round(cap_height + line_pitch + 2 * padding)
+    height = round(above + below + line_pitch + 2 * padding)
 
     image = Image.new("L", (width, height), paper)
     draw = ImageDraw.Draw(image)
-    font = load_font(font_size_for_cap_height(cap_height))
 
     char_boxes: list[tuple[int, int, int, int]] = []
     line_boxes: list[tuple[int, int, int, int]] = []
 
     for line_index, line in enumerate(lines):
-        baseline = padding + cap_height + line_index * line_pitch
+        baseline = padding + above + line_index * line_pitch
         for char_index, char in enumerate(line):
             cell_left = padding + char_index * pitch
             # Centre the glyph in its cell rather than trusting its advance: the
@@ -128,20 +149,22 @@ def render_mrz(
             glyph_width = glyph_right - glyph_left
             x = cell_left + (pitch - glyph_width) / 2.0 - glyph_left
             draw.text((x, baseline), char, font=font, fill=ink, anchor="ls")
+            # The box spans the alphabet's full ink extent, not this glyph's, so
+            # that every cell is the same height and no digit is clipped.
             char_boxes.append(
                 (
                     round(cell_left),
-                    round(baseline - cap_height),
+                    round(baseline - above),
                     round(cell_left + pitch),
-                    round(baseline),
+                    round(baseline + below),
                 )
             )
         line_boxes.append(
             (
                 round(padding),
-                round(baseline - cap_height),
+                round(baseline - above),
                 round(padding + F.LINE_LENGTH * pitch),
-                round(baseline),
+                round(baseline + below),
             )
         )
 

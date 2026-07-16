@@ -59,6 +59,34 @@ def test_a_glyphs_own_width_never_moves_the_grid() -> None:
     assert fives.char_boxes == letters.char_boxes
 
 
+@pytest.mark.parametrize(
+    ("label", "mrz"),
+    [
+        ("digits", "0" * 44 + "\n" + "8" * 44),
+        ("letters", "H" * 44 + "\n" + "H" * 44),
+        ("fillers", "<" * 44 + "\n" + "<" * 44),
+    ],
+)
+def test_no_glyph_escapes_its_line_box(label: str, mrz: str) -> None:
+    """Every pixel of ink must sit inside the ground-truth boxes.
+
+    Sizing the box to the cap height of 'H' clipped three pixels off the top of
+    every digit, because OCR-B's digits overshoot its capitals. The boxes are
+    what the recognizer crops with, so that silently fed it mutilated glyphs.
+    """
+    result = render_mrz(mrz, dpi=300)
+    ink_rows = numpy.where((numpy.asarray(result.image) < 128).any(axis=1))[0]
+
+    assert ink_rows.min() >= result.line_boxes[0][1], f"{label} escape above the box"
+    assert ink_rows.max() <= result.line_boxes[1][3], f"{label} escape below the box"
+
+
+def test_digits_and_letters_share_a_box_height() -> None:
+    # A per-glyph box would leak the character's identity through its geometry.
+    result = render_mrz(SPECIMEN)
+    assert len({box[3] - box[1] for box in result.char_boxes}) == 1
+
+
 def test_the_zone_is_centred_within_the_page_width() -> None:
     geometry = PageGeometry()
     # 44 characters at 2.54mm is 111.76mm inside a 125mm page.
