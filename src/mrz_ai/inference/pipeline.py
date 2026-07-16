@@ -84,8 +84,14 @@ class MRZReader:
         return cls(model=model, input_geometry=input_geometry, k=k, device=device)
 
     @torch.no_grad()
-    def _logits(self, crops: list[Array]) -> Array:
-        """Run the model over crops, returning ``(n, 44, 37)`` logits."""
+    def logits_for(self, crops: list[Array]) -> Array:
+        """Run the model over crops, returning ``(n, 44, 37)`` logits.
+
+        Public because measuring the decoder against a greedy baseline needs the
+        raw logits both strategies share — otherwise the comparison would be
+        against a second forward pass and could differ for reasons other than
+        the decoding.
+        """
         batch = np.stack([prepare(crop, self.input_geometry) for crop in crops])
         tensor = torch.from_numpy(batch).to(self.device)
         logits: torch.Tensor = self.model(tensor)
@@ -125,7 +131,7 @@ class MRZReader:
         year = reference_year if reference_year is not None else date.today().year
 
         flat = [crop for pair in pairs for crop in pair]
-        logits = self._logits(flat)
+        logits = self.logits_for(flat)
 
         return [
             best_reading(logits[index * 2], logits[index * 2 + 1], k=self.k, reference_year=year)
