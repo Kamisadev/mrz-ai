@@ -9,3 +9,5 @@ checkpoints/
 *.onnx
 *.pt
 /OCR-B.zip
+.DS_Store
+.impeccable/
