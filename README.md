@@ -12,8 +12,8 @@ every field is a constant slice and the charset is 37 characters.
 | --- | --- | --- |
 | 0 | ICAO engine — serialize / parse / validate | **done** |
 | 1 | Synthetic engine — OCR-B render + degradation | **done** |
-| 2 | Recognition — PARSeq, 37-char head | next |
-| 3 | Detection — MRZ zone crop | |
+| 2 | Recognition — ViT-tiny encoder + fixed-length head | **model + training done**, untrained |
+| 3 | Detection — MRZ zone crop | next |
 | 4 | Candidate decoder — beam search × ICAO validation | |
 | 5 | Export — ONNX / INT8, API, CLI | |
 
@@ -23,7 +23,7 @@ every field is a constant slice and the charset is 37 characters.
 src/mrz_ai/
 ├── parser/       # ICAO 9303 TD3. Pure Python, no ML deps.
 ├── synthetic/    # identity -> render -> degrade -> line crops. No torch.
-├── recognition/  # phase 2
+├── recognition/  # 32x704 -> (44, 37) logits. ViT-tiny.
 ├── detection/    # phase 3
 ├── inference/    # phase 4
 └── training/     # entrypoints the notebooks call
@@ -63,7 +63,7 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-663 tests, `mypy --strict` clean.
+744 tests, `mypy --strict` clean.
 
 See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
 and `docs/synthetic.md` for the generator's — including four bugs that only showed up by
