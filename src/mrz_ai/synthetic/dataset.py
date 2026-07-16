@@ -51,7 +51,12 @@ class DatasetConfig:
     """
 
     severity_range: tuple[float, float] = (0.0, 1.0)
-    dpi: float = 200.0
+    #: Chosen to match the recognizer, not for fidelity: at 150dpi a character is
+    #: rendered ~15px wide against the 16px the model is fed, so almost no work is
+    #: wasted. 200dpi renders 20px and discards the difference for 15% more CPU,
+    #: and the generator is CPU-bound on a training pod. Going lower is worse than
+    #: slow: 120dpi renders 12px and upscales to 16, inventing detail.
+    dpi: float = 150.0
     #: Height every crop is resized to. PARSeq wants a fixed input height.
     target_height: int = 32
     #: Fraction of the line's height added as padding on each edge before the

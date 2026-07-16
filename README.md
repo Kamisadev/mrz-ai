@@ -56,6 +56,14 @@ Two mitigations: over-randomize the domain rather than under, and acquire a
 held-out set of 50–100 real images for measurement only, never for training.
 Until that set exists, treat every accuracy number as unvalidated.
 
+## Training on RunPod
+
+This job is **CPU-bound, not GPU-bound**: the model is 3.4M parameters, but every sample is
+rendered and degraded from scratch on the CPU. Rent vCPUs, not a big GPU — an A100 would
+need ~30 cores to keep it fed and no pod offers that pairing.
+
+Roughly **30 minutes on a 16-vCPU pod**. See `docs/runpod.md`.
+
 ## Setup
 
 ```bash
@@ -72,3 +80,8 @@ rendering the output and looking at it.
 Run `notebooks/01_synthetic_preview.ipynb` before any training: it checks the labels,
 charset coverage, throughput and reproducibility, and prints a contact sheet across the
 severity ramp. Your eyes on that sheet are the only real check that exists.
+
+## License
+
+MIT — see `LICENSE`. The bundled OCR-B font is SIL OFL 1.1 and is not covered by it;
+see `assets/fonts/OCR-B-LICENSE.md`.
