@@ -62,7 +62,7 @@ This job is **CPU-bound, not GPU-bound**: the model is 3.4M parameters, but ever
 rendered and degraded from scratch on the CPU. Rent vCPUs, not a big GPU — an A100 would
 need ~30 cores to keep it fed and no pod offers that pairing.
 
-Roughly **30 minutes on a 16-vCPU pod**. See `docs/runpod.md`.
+Roughly **45 minutes on a 16-vCPU pod**, ~20 on a 32-vCPU one. See `docs/runpod.md`.
 
 ## Setup
 

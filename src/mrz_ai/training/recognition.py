@@ -63,8 +63,9 @@ class TrainConfig:
     #: little accuracy on this kind of task.
     ema_decay: float = 0.999
     num_workers: int = 8
-    #: See DatasetConfig.dpi: 150 matches the model's 16px/char with the least work.
-    dpi: float = 150.0
+    #: See DatasetConfig.dpi: the cheapest dpi whose rendered lines are already
+    #: taller than the model's input, so no crop is ever upscaled.
+    dpi: float = 250.0
     seed: int = 0
 
     eval_every: int = 1_000

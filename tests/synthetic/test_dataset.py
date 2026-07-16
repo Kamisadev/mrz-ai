@@ -180,3 +180,26 @@ def test_each_line_is_framed_independently() -> None:
     dataset = MRZLineDataset(DatasetConfig(dpi=150))
     widths = [(dataset[i * 2].image.shape[1], dataset[i * 2 + 1].image.shape[1]) for i in range(8)]
     assert any(first != second for first, second in widths)
+
+
+def test_the_default_dpi_renders_lines_taller_than_the_crop_they_become() -> None:
+    """A crop must never be upscaled, or every sample is blurry by construction.
+
+    `extract_line` normalizes each crop to `target_height`, so if the source line
+    is shorter than that, the crop is an upscale and the model never sees a sharp
+    glyph — not even at severity 0. A line's ink is ~3.5mm, which only reaches
+    32px above ~232dpi. The default was briefly 150 (a 1.52x upscale) after
+    reasoning about character *width*, which is not what drives the resize:
+    aspect ratio fixes the crop's width near 758px whatever the dpi.
+    """
+    from mrz_ai.synthetic.render import render_mrz
+
+    config = DatasetConfig()
+    mrz = serialize(random_identity(random.Random(0)))
+    rendered = render_mrz(mrz, dpi=config.dpi)
+    left, top, right, bottom = rendered.line_boxes[0]
+
+    assert bottom - top >= config.target_height, (
+        f"at {config.dpi}dpi a line is {bottom - top}px tall but crops are "
+        f"{config.target_height}px: every sample would be upscaled"
+    )

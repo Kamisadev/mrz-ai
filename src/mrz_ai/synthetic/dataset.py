@@ -51,12 +51,22 @@ class DatasetConfig:
     """
 
     severity_range: tuple[float, float] = (0.0, 1.0)
-    #: Chosen to match the recognizer, not for fidelity: at 150dpi a character is
-    #: rendered ~15px wide against the 16px the model is fed, so almost no work is
-    #: wasted. 200dpi renders 20px and discards the difference for 15% more CPU,
-    #: and the generator is CPU-bound on a training pod. Going lower is worse than
-    #: slow: 120dpi renders 12px and upscales to 16, inventing detail.
-    dpi: float = 150.0
+    #: Set by the *height* of a rendered line, not its width. ``extract_line``
+    #: normalizes every crop to ``target_height``, so the source line must already
+    #: be at least that tall or the crop is upscaled — and an upscaled sample is a
+    #: blurry one, however clean its severity claims to be. A line's ink is about
+    #: 3.5mm, which reaches 32px at ~232dpi:
+    #:
+    #:     dpi 150 -> 21px source -> 1.52x UPSCALE   (never a sharp glyph)
+    #:     dpi 200 -> 28px source -> 1.14x upscale
+    #:     dpi 250 -> 35px source -> 0.91x downscale (chosen)
+    #:     dpi 300 -> 41px source -> 0.78x, correct but 30% more CPU
+    #:
+    #: Width is not the constraint: the crop's aspect ratio fixes it near 758px
+    #: whatever the dpi. Higher costs real time — the generator is what a training
+    #: pod is bottlenecked on — so this is the cheapest dpi that never invents
+    #: detail.
+    dpi: float = 250.0
     #: Height every crop is resized to. PARSeq wants a fixed input height.
     target_height: int = 32
     #: Fraction of the line's height added as padding on each edge before the
