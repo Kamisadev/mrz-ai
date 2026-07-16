@@ -10,9 +10,9 @@ every field is a constant slice and the charset is 37 characters.
 
 | Phase | What | State |
 | --- | --- | --- |
-| 0 | ICAO engine — serialize / parse / validate | **done**, 603 tests |
-| 1 | Synthetic engine — OCR-B render + degradation | next |
-| 2 | Recognition — PARSeq, 37-char head | |
+| 0 | ICAO engine — serialize / parse / validate | **done** |
+| 1 | Synthetic engine — OCR-B render + degradation | **done** |
+| 2 | Recognition — PARSeq, 37-char head | next |
 | 3 | Detection — MRZ zone crop | |
 | 4 | Candidate decoder — beam search × ICAO validation | |
 | 5 | Export — ONNX / INT8, API, CLI | |
@@ -22,7 +22,7 @@ every field is a constant slice and the charset is 37 characters.
 ```text
 src/mrz_ai/
 ├── parser/       # ICAO 9303 TD3. Pure Python, no ML deps.
-├── synthetic/    # phase 1
+├── synthetic/    # identity -> render -> degrade -> line crops. No torch.
 ├── recognition/  # phase 2
 ├── detection/    # phase 3
 ├── inference/    # phase 4
@@ -58,5 +58,12 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-See `docs/parser.md` for the ICAO engine's design decisions and its two
-validation blind spots.
+663 tests, `mypy --strict` clean.
+
+See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
+and `docs/synthetic.md` for the generator's — including four bugs that only showed up by
+rendering the output and looking at it.
+
+Run `notebooks/01_synthetic_preview.ipynb` before any training: it checks the labels,
+charset coverage, throughput and reproducibility, and prints a contact sheet across the
+severity ramp. Your eyes on that sheet are the only real check that exists.
