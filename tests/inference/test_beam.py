@@ -153,3 +153,24 @@ def test_a_candidate_is_a_valid_mrz_line() -> None:
         assert isinstance(candidate, Candidate)
         assert len(candidate.text) == LABEL_LENGTH
         assert all(char in CHAR_TO_INDEX for char in candidate.text)
+
+
+def test_the_search_does_not_need_torch() -> None:
+    """`beam` and `candidates` must stay importable without the framework.
+
+    The blueprint runs inference on ONNX Runtime, where torch is not present,
+    and the ICAO logic is the part that must go there unchanged. A stray
+    `import torch` would not fail any other test — it would just quietly weld
+    the search to a dependency it does not need, exactly as the synthetic engine
+    avoids for its dataloader workers.
+    """
+    import subprocess
+    import sys
+
+    program = (
+        "import sys; sys.modules['torch'] = None\n"
+        "import mrz_ai.inference.beam, mrz_ai.inference.candidates, mrz_ai.inference\n"
+        "print('ok')"
+    )
+    result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
+    assert result.returncode == 0, f"importing without torch failed:\n{result.stderr}"
