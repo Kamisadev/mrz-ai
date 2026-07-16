@@ -37,8 +37,11 @@ __all__ = ["CHECKPOINT", "Reader", "create_app"]
 CHECKPOINT = Path("recognition_model/recognition.pt")
 STATIC = Path(__file__).parent / "static"
 
-#: Uploads are capped well above a phone photo and well below anything that
-#: would exhaust memory. An unbounded upload is a denial of service by accident.
+#: Uploads are capped well above a phone photo and well below anything that would
+#: exhaust memory. Note what this does not do: the body is already in memory by
+#: the time it is checked, so this rejects a huge image rather than preventing one
+#: from being read. That is enough for a tool on localhost and would not be if
+#: this ever faced a network, where the limit belongs in front of the app.
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 

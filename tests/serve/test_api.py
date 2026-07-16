@@ -54,15 +54,6 @@ def reader() -> ScriptedReader:
 def client(reader: ScriptedReader) -> TestClient:
     with TestClient(create_app(reader)) as running:
         yield running
-
-
-def client_for(reader: ScriptedReader) -> TestClient:
-    """A client outside the fixture, for tests that need their own reader."""
-    client = TestClient(create_app(reader))
-    client.__enter__()
-    return client
-
-
 def post(client: TestClient, image: bytes, **box):
     fields = {"x": 0, "y": 0, "width": 400, "height": 100} | box
     return client.post(
@@ -115,9 +106,9 @@ def test_the_response_says_where_the_lines_were_found(client: TestClient) -> Non
     assert {"x", "y", "width", "height", "clipped"} == set(first)
 
 
-def test_a_box_cutting_through_the_text_warns_the_page() -> None:
+def test_a_box_cutting_through_the_text_warns_the_page(client: TestClient) -> None:
     """A clipped line reads as a broken model unless the page is told otherwise."""
-    body = post(client_for(ScriptedReader()), an_image(), x=60, width=340).json()
+    body = post(client, an_image(), x=60, width=340).json()
 
     assert body["clipped"] is True
     assert all(line["clipped"] for line in body["lines"])
@@ -175,7 +166,7 @@ def test_a_missing_box_is_rejected(client: TestClient) -> None:
 
 
 def test_an_oversized_upload_is_refused(client: TestClient) -> None:
-    """An unbounded upload is a denial of service by accident."""
+    """A huge upload must come back as 413, not as an OpenCV failure."""
     from mrz_ai.serve.api import MAX_UPLOAD_BYTES
 
     response = post(client, b"\x89PNG" + b"\x00" * (MAX_UPLOAD_BYTES + 1))
