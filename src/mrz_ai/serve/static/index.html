@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MRZ Reader</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>MRZ Reader</h1>
+      <p class="sub">ICAO 9303 &middot; TD3 passport</p>
+    </div>
+  </div>
+  <div class="meta">
+    <span class="dot" id="status-dot" aria-hidden="true"></span>
+    <span id="status-text">Connecting</span>
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Document</h2>
+      <button class="ghost" id="reset" hidden>Replace</button>
+    </div>
+
+    <div class="drop" id="drop">
+      <input type="file" id="file" accept="image/*" hidden>
+      <div class="drop-inner">
+        <span class="drop-mark" aria-hidden="true"></span>
+        <p class="drop-title">Drop a passport image here</p>
+        <p class="drop-sub">or <button class="link" id="browse">browse</button> &mdash; JPEG or PNG</p>
+        <p class="drop-note">Read on this machine. The image is never stored or sent anywhere.</p>
+      </div>
+    </div>
+
+    <div class="stage" id="stage" hidden>
+      <p class="hint">
+        Drag a box around <strong>both MRZ lines</strong> &mdash; the two dense rows
+        of <code>&lt;&lt;&lt;</code> at the bottom of the page.
+      </p>
+      <div class="canvas" id="canvas">
+        <img id="preview" alt="The passport you uploaded">
+        <div class="sel" id="sel" hidden>
+          <span class="handle nw" data-corner="nw"></span>
+          <span class="handle ne" data-corner="ne"></span>
+          <span class="handle sw" data-corner="sw"></span>
+          <span class="handle se" data-corner="se"></span>
+        </div>
+        <div class="found" id="found" hidden></div>
+      </div>
+      <div class="stage-foot">
+        <p class="tip">The box does not need to be tight &mdash; the lines are found inside it.</p>
+        <button class="primary" id="read" disabled>Read MRZ</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Result</h2>
+      <span class="chip" id="verdict" hidden></span>
+    </div>
+
+    <div class="empty" id="empty">
+      <p>No document read yet.</p>
+      <p class="muted">Fields appear here once an MRZ is selected and read.</p>
+    </div>
+
+    <div class="result" id="result" hidden>
+      <p class="warn" id="clipped" hidden>
+        The selection appears to cut through a line. Characters outside the box
+        were never read, so the fields below may be wrong. Drag a wider box.
+      </p>
+
+      <dl class="fields" id="fields"></dl>
+
+      <div class="block">
+        <h3>Machine-readable zone</h3>
+        <pre class="mrz" id="mrz"></pre>
+      </div>
+
+      <div class="block" id="issues-block" hidden>
+        <h3>Why this failed validation</h3>
+        <ul class="issues" id="issues"></ul>
+      </div>
+
+      <div class="block">
+        <h3>What was actually checked</h3>
+        <p class="legend">
+          <span class="tag verified">Verified</span>
+          A check digit, or the country allowlist, accepted this field. That
+          catches most misreads &mdash; not all of them. A wrong value can still
+          land on the same check digit as the right one.
+        </p>
+        <p class="legend">
+          <span class="tag unverified">Unverified</span>
+          Nothing in the standard covers this field. A name carries no check
+          digit, so a misread name still yields a perfectly valid MRZ. Read these
+          against the page yourself.
+        </p>
+        <p class="legend">
+          <span class="tag failed">Failed</span>
+          A check contradicts this field. The reading is wrong here.
+        </p>
+      </div>
+
+      <p class="caveat">
+        Trained only on synthetic images. Accuracy on real passport photographs is
+        unmeasured.
+      </p>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

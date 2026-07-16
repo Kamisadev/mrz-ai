@@ -12,10 +12,11 @@ every field is a constant slice and the charset is 37 characters.
 | --- | --- | --- |
 | 0 | ICAO engine — serialize / parse / validate | **done** |
 | 1 | Synthetic engine — OCR-B render + degradation | **done** |
-| 2 | Recognition — ViT-tiny encoder + fixed-length head | **model + training done**, untrained |
-| 3 | Detection — MRZ zone crop | next |
-| 4 | Candidate decoder — beam search × ICAO validation | |
-| 5 | Export — ONNX / INT8, API, CLI | |
+| 2 | Recognition — ViT-tiny encoder + fixed-length head | **trained** — 99.5% line accuracy at full severity |
+| 3 | Detection — MRZ zone crop | not started; the user draws the box instead |
+| 4 | Candidate decoder — exact k-best × ICAO validation | **done** |
+| 5 | Export — ONNX / INT8, CLI | |
+| — | Web reader — upload, select, read | **done** (`mrz_ai.serve`) |
 
 ## Layout
 
@@ -25,7 +26,8 @@ src/mrz_ai/
 ├── synthetic/    # identity -> render -> degrade -> line crops. No torch.
 ├── recognition/  # 32x704 -> (44, 37) logits. ViT-tiny.
 ├── detection/    # phase 3
-├── inference/    # phase 4
+├── inference/    # phase 4 — exact k-best, ICAO ranking, MRZReader
+├── serve/        # the web reader: crop -> read -> page
 └── training/     # entrypoints the notebooks call
 notebooks/        # one self-contained cell per training job (RunPod)
 configs/
@@ -39,6 +41,36 @@ Training runs on RunPod. Each notebook in `notebooks/` is a single
 self-contained cell: it installs dependencies, imports the package and calls one
 entrypoint from `mrz_ai.training`. All the real logic lives in the package, so
 the cell stays paste-and-run and the same code path is testable locally.
+
+## Reading a passport
+
+```bash
+uv pip install -e ".[serve]"
+.venv/bin/python -m uvicorn mrz_ai.serve.api:app --port 8000
+```
+
+Open `http://localhost:8000`, drop in a passport image, drag a box around both
+MRZ lines, read. The image is decoded in memory and never written to disk,
+logged, or sent anywhere — a local model is the only reason that is possible, and
+a passport is not a file to be casual with.
+
+Point it at a different checkpoint with `MRZReader.from_checkpoint`; the default
+is `recognition_model/recognition.pt`.
+
+**There is no detection stage, so you draw the box.** That is not laziness — the
+synthetic engine only ever draws bare MRZ strips, never a whole passport page, so
+a detector trained on it would learn to find text on blank paper and would meet
+its first real page in production. Inside a box you have drawn, the problem is
+small enough to solve honestly, and `serve/crop.py` solves it: it finds the two
+lines by their ink and reframes them to what the recognizer was trained on.
+
+That reframing is load-bearing, not a nicety. The recognizer resizes its crop to
+a fixed 32x704, so blank paper inside the crop shifts every character out of the
+cell the model expects. Measured on synthetic pages, halving a box drawn 30%
+loose reads **10%** of documents correctly; finding the ink first reads **100%**,
+and stops depending on how carefully anyone dragged. The box being loose is free.
+The box clipping a character is not — so the page says when it thinks that
+happened, rather than quietly returning a confident misreading.
 
 ## The known risk
 
@@ -71,7 +103,7 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-744 tests, `mypy --strict` clean.
+847 tests, `mypy --strict` clean.
 
 See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
 and `docs/synthetic.md` for the generator's — including four bugs that only showed up by
