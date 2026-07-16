@@ -16,6 +16,7 @@ from mrz_ai.training.recognition import (
     TrainConfig,
     evaluate,
     _learning_rate,
+    _loader,
     train_recognition,
 )
 from mrz_ai.synthetic.dataset import DatasetConfig
@@ -124,3 +125,45 @@ def test_evaluate_leaves_the_model_in_training_mode(tmp_path) -> None:
     model.train()
     evaluate(model, loader, torch.device("cpu"), batches=1)
     assert model.training, "evaluation must not silently disable dropout for the rest of training"
+
+
+def test_a_stage_never_repeats_a_document() -> None:
+    """The premise of online generation is that no sample is ever seen twice.
+
+    It was not holding. `MRZLineDataset` keys its documents on index *and*
+    epoch, and the loop advanced the epoch with `set_epoch` — on the training
+    process's copy of the dataset. `persistent_workers=True` means the workers
+    each hold their own copy and generate from that, so the epoch stayed 0 in
+    every worker and the short epoch simply replayed. At the old
+    `batch_size * 200`, the heavy stage drew 2.56M samples from 25.6k distinct
+    ones. The loader now sizes its index space to the whole stage, so the index
+    alone is unique and no epoch has to cross a process boundary.
+    """
+    config = TrainConfig(batch_size=8, num_workers=0)
+    steps = 40  # well past the 200-batch epoch that used to wrap
+    loader = _loader((0.0, 0.05), config, seed=0, steps=steps)
+
+    seen: set[tuple[int, ...]] = set()
+    count = 0
+    for _, labels in loader:
+        for line in labels:
+            seen.add(tuple(line.tolist()))
+        count += 1
+        if count >= steps:
+            break
+
+    total = count * config.batch_size
+    assert len(seen) == total, f"only {len(seen)} distinct lines in {total} samples"
+
+
+def test_each_stage_draws_its_own_documents() -> None:
+    """A stage is new passports, not the last stage's photographed harder."""
+    config = TrainConfig(batch_size=8, num_workers=0)
+
+    def first_batch(seed: int) -> set[tuple[int, ...]]:
+        loader = _loader((0.0, 0.05), config, seed=seed, steps=4)
+        _, labels = next(iter(loader))
+        return {tuple(line.tolist()) for line in labels}
+
+    # The seeds train_recognition assigns to stage 0 and stage 1.
+    assert not (first_batch(0) & first_batch(0 + 104_729))

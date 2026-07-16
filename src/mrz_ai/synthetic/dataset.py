@@ -20,9 +20,9 @@ import numpy as np
 
 from ..parser import serialize
 from ..parser import fields as F
-from .degrade import DegradeConfig, degrade
+from .degrade import DegradeConfig, DegradeResult, degrade
 from .identity import IdentityConfig, random_identity
-from .render import render_mrz
+from .render import RenderResult, render_mrz
 
 Array = np.ndarray
 
@@ -155,6 +155,40 @@ class MRZLineDataset:
     def __init__(self, config: DatasetConfig | None = None) -> None:
         self.config = config or DatasetConfig()
         self._epoch = 0
+        # Consecutive indices are the two lines of one document, and rendering a
+        # document is the single most expensive thing this class does. Holding
+        # the last one halves the generator's cost, since line 2 always follows
+        # line 1 into the same worker. Keyed by (epoch, document) so a stale
+        # entry can never be served.
+        self._cached_document: (
+            tuple[tuple[int, int], tuple[str, float, RenderResult, DegradeResult]] | None
+        ) = None
+
+    def _document(
+        self, document_index: int, seed: int
+    ) -> tuple[str, float, RenderResult, DegradeResult]:
+        """The rendered, degraded document — built once, used by both its lines."""
+        key = (self._epoch, document_index)
+        if self._cached_document is not None and self._cached_document[0] == key:
+            return self._cached_document[1]
+
+        config = self.config
+        identity_rng = random.Random(seed)
+        camera_rng = random.Random(seed ^ 0x5F37_2C91)
+        np_rng = np.random.default_rng(seed)
+
+        mrz = serialize(random_identity(identity_rng, config.identity))
+
+        low, high = config.severity_range
+        severity = float(camera_rng.uniform(low, high))
+        rendered = render_mrz(mrz, dpi=config.dpi)
+        result = degrade(
+            np.asarray(rendered.image), np_rng, severity=severity, config=config.degrade
+        )
+
+        document = (mrz, severity, rendered, result)
+        self._cached_document = (key, document)
+        return document
 
     def __len__(self) -> int:
         # An arbitrary number: the data is unbounded, but training loops want a
@@ -194,24 +228,15 @@ class MRZLineDataset:
         # were in the same photograph and must share its severity and blur; the
         # crop stream is keyed to the line, since a detector locates each line
         # separately and frames each one a little differently.
-        identity_rng = random.Random(seed)
-        camera_rng = random.Random(seed ^ 0x5F37_2C91)
         crop_rng = random.Random((seed ^ 0x5F37_2C91) * F.LINE_COUNT + line_index)
-        np_rng = np.random.default_rng(seed)
-
-        fields = random_identity(identity_rng, config.identity)
-        mrz = serialize(fields)
-
-        low, high = config.severity_range
-        severity = float(camera_rng.uniform(low, high))
-        rendered = render_mrz(mrz, dpi=config.dpi)
-        clean = np.asarray(rendered.image)
-
-        result = degrade(clean, np_rng, severity=severity, config=config.degrade)
 
         # Both lines are always rendered and degraded together so the document
         # stays coherent: shared lighting, shared blur, and a sliver of the
         # neighbouring line bleeding into the crop, exactly as a real one has.
+        # That shared work is also why it is worth keeping: the second line of a
+        # document asks for exactly what the first just built.
+        mrz, severity, rendered, result = self._document(document_index, seed)
+
         quad = result.locate_quad(rendered.line_boxes[line_index])
 
         offset = crop_rng.uniform(-config.max_crop_offset, config.max_crop_offset)

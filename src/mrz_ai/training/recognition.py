@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as functional
@@ -29,6 +31,18 @@ from ..recognition.model import MRZRecognizer, count_parameters
 from ..recognition.preprocess import prepare
 from ..recognition.tokenizer import encode
 from ..synthetic.dataset import DatasetConfig, MRZLineDataset
+
+
+def usable_cores() -> int:
+    """How many cores this process may actually run on.
+
+    ``sched_getaffinity`` is the honest answer and is what a training pod needs:
+    ``cpu_count`` reports the host's cores, and a container is routinely given
+    fewer. It is Linux-only, so everywhere else falls back to the count.
+    """
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 4
 
 
 @dataclass(frozen=True)
@@ -62,7 +76,15 @@ class TrainConfig:
     #: Exponential moving average of the weights. Cheap, and reliably worth a
     #: little accuracy on this kind of task.
     ema_decay: float = 0.999
-    num_workers: int = 8
+    #: One worker per usable core. The generator is pure CPU and the model is
+    #: small, so the GPU finishes a step long before the next batch exists —
+    #: every worker is one more sample per second, right up to the core count.
+    #: ``sched_getaffinity`` rather than ``cpu_count``: on a shared pod the
+    #: latter reports the host's cores, not the ones this container may use.
+    num_workers: int = field(default_factory=usable_cores)
+    #: Batches queued per worker. Costs memory, absorbs the jitter of a
+    #: generator whose per-sample cost swings with severity.
+    prefetch_factor: int = 4
     #: See DatasetConfig.dpi: the cheapest dpi whose rendered lines are already
     #: taller than the model's input, so no crop is ever upscaled.
     dpi: float = 250.0
@@ -186,16 +208,41 @@ def _learning_rate(step: int, config: TrainConfig) -> float:
     return config.learning_rate * 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
 
 
+def _init_worker(worker_id: int) -> None:
+    """Make a worker single-threaded.
+
+    OpenCV defaults to a thread pool sized for the whole machine, so N workers
+    each fan a `warpPerspective` out over N cores and spend their time in the
+    scheduler rather than in the warp. One process per core, one thread per
+    process: the parallelism belongs to the DataLoader, not to cv2.
+    """
+    cv2.setNumThreads(0)
+    torch.set_num_threads(1)
+
+
 def _loader(
-    severity: tuple[float, float], config: TrainConfig, *, seed: int, train: bool
+    severity: tuple[float, float], config: TrainConfig, *, seed: int, steps: int
 ) -> DataLoader[tuple[torch.Tensor, torch.Tensor]]:
+    """A loader whose index space covers ``steps`` batches without ever wrapping.
+
+    The epoch is sized to the whole stage on purpose. `MRZLineDataset` derives a
+    document from its index *and* its epoch, and `set_epoch` is what advances the
+    latter — but a persistent worker holds its own copy of the dataset, so a
+    `set_epoch` in the training process never reaches the workers that actually
+    generate. A short epoch therefore did not roll over into new documents; it
+    replayed the same ones, and at `batch_size * 200` the heavy stage drew 2.5M
+    samples from 25.6k distinct ones. Online generation exists precisely to stop
+    that. Giving the stage an index space it cannot exhaust removes the epoch
+    from the hot path rather than trying to synchronise it across processes.
+    """
     dataset = TorchLineDataset(
         DatasetConfig(
             severity_range=severity,
             dpi=config.dpi,
             target_height=config.input_geometry.height,
             seed=seed,
-            epoch_size=config.batch_size * 200,
+            # +1 batch so `drop_last` can never leave the stage a step short.
+            epoch_size=(steps + 1) * config.batch_size,
         ),
         config.input_geometry,
     )
@@ -207,6 +254,8 @@ def _loader(
         drop_last=True,
         pin_memory=torch.cuda.is_available(),
         persistent_workers=config.num_workers > 0,
+        worker_init_fn=_init_worker if config.num_workers > 0 else None,
+        prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
     )
 
 
@@ -218,21 +267,44 @@ def train_recognition(config: TrainConfig | None = None) -> Path:
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if device.type == "cuda":
+        # Ampere and later carry tensor cores for 19-bit-mantissa float32. The
+        # accuracy loss is beneath what this task can measure and the matmuls run
+        # several times faster, so there is no reason to decline them.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        # Every batch has identical shape, so cudnn's autotuner pays for itself
+        # once and then only wins.
+        torch.backends.cudnn.benchmark = True
+        # The main process must not fight the workers for cores.
+        torch.set_num_threads(1)
+        cv2.setNumThreads(0)
+
     model = MRZRecognizer(config.input_geometry, config.model_geometry).to(device)
     ema = EMA(model, config.ema_decay)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
-    # Mixed precision on GPU only; on CPU it is a slowdown.
+    # Mixed precision on GPU only; on CPU it is a slowdown. bfloat16 where the
+    # card has it (Ampere onward, so the 3090 does): it carries float32's
+    # exponent, so gradients cannot underflow and the loss scaler is dead weight.
+    # Older cards fall back to float16, which needs the scaler to survive.
     use_amp = device.type == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    use_bf16 = use_amp and torch.cuda.is_bf16_supported()
+    amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and not use_bf16)
 
     # Held out by seed rather than by splitting: the generator is unbounded, so a
     # different seed is a genuinely disjoint stream and there is no leakage to
     # worry about. Evaluated at full severity, which is the honest test.
-    validation = _loader((0.0, 1.0), config, seed=999_983, train=False)
+    validation = _loader(
+        (0.0, 1.0), config, seed=999_983, steps=max(config.eval_batches * 2, 1)
+    )
 
-    print(f"device: {device} | params: {count_parameters(model)/1e6:.2f}M")
+    hardware = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
+    precision = ("bf16" if use_bf16 else "fp16") if use_amp else "fp32"
+    print(f"device: {device} ({hardware}) | {precision} | params: {count_parameters(model)/1e6:.2f}M")
+    print(f"workers: {config.num_workers} over {usable_cores()} usable cores")
     print(f"input: {config.input_geometry.height}x{config.input_geometry.width}, "
           f"{config.input_geometry.num_tokens} tokens, "
           f"{config.input_geometry.pixels_per_char:.0f}px/char")
@@ -242,15 +314,21 @@ def train_recognition(config: TrainConfig | None = None) -> Path:
     step = 0
     started = time.perf_counter()
 
-    for stage in config.curriculum:
+    for stage_index, stage in enumerate(config.curriculum):
         print(f"--- stage {stage.name}: severity {stage.severity}, {stage.steps} steps")
-        loader = _loader(stage.severity, config, seed=config.seed, train=True)
-        stream: TorchLineDataset = loader.dataset  # type: ignore[assignment]
+        # A seed per stage, so a stage is a fresh set of documents rather than
+        # the previous stage's photographed harder. Reusing one seed would show
+        # the model the same passports four times over, and it would be the
+        # earlier stages' identities it memorised.
+        loader = _loader(
+            stage.severity,
+            config,
+            seed=config.seed + stage_index * 104_729,
+            steps=stage.steps,
+        )
         stage_step = 0
-        epoch = 0
 
         while stage_step < stage.steps:
-            stream.set_epoch(epoch)
             for images, labels in loader:
                 if stage_step >= stage.steps:
                     break
@@ -261,7 +339,7 @@ def train_recognition(config: TrainConfig | None = None) -> Path:
                     group["lr"] = _learning_rate(step, config)
 
                 images, labels = images.to(device, non_blocking=True), labels.to(device)
-                with torch.amp.autocast("cuda", enabled=use_amp):
+                with torch.amp.autocast("cuda", enabled=use_amp, dtype=amp_dtype):
                     logits = model(images)
                     loss = functional.cross_entropy(
                         logits.reshape(-1, logits.shape[-1]),
@@ -286,7 +364,6 @@ def train_recognition(config: TrainConfig | None = None) -> Path:
                     result = evaluate(model, validation, device, config.eval_batches)
                     print(f"  eval  {result}")
                     history.append({"step": step, "stage": stage.name, **asdict(result)})
-            epoch += 1
 
     result = evaluate(model, validation, device, config.eval_batches * 2)
     print(f"\nfinal (raw weights): {result}")

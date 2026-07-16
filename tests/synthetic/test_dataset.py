@@ -203,3 +203,37 @@ def test_the_default_dpi_renders_lines_taller_than_the_crop_they_become() -> Non
         f"at {config.dpi}dpi a line is {bottom - top}px tall but crops are "
         f"{config.target_height}px: every sample would be upscaled"
     )
+
+
+def test_caching_a_document_does_not_change_the_samples_it_yields() -> None:
+    """The document cache must be invisible in the output.
+
+    Rendering and degrading a document is the generator's dominant cost, and both
+    of its lines need the same one — so the second line reuses what the first
+    built. That is a 2x saving on the bottleneck of a training pod, and it is
+    also the kind of optimization that quietly changes the data: serve a stale
+    entry and a line gets cropped out of the wrong passport, with the right label
+    still attached. Nothing downstream could catch that, so it is pinned here.
+    """
+    config = DatasetConfig(severity_range=(0.0, 1.0))
+    sequential = MRZLineDataset(config)
+
+    for index in range(6):
+        # A fresh dataset per index never hits the cache, so this is the
+        # uncached path by construction.
+        cached, uncached = sequential[index], MRZLineDataset(config)[index]
+        assert cached.text == uncached.text
+        assert cached.severity == uncached.severity
+        assert np.array_equal(cached.image, uncached.image), (
+            f"index {index}: the cached document yielded different pixels"
+        )
+
+
+def test_a_new_epoch_is_not_served_from_the_cache() -> None:
+    """The cache is keyed by epoch, because the same index means a new document."""
+    dataset = MRZLineDataset(DatasetConfig())
+    dataset.set_epoch(0)
+    first = dataset[0]
+    dataset.set_epoch(1)
+
+    assert dataset[0].text != first.text, "the epoch's document was served stale"
