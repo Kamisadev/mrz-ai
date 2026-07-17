@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 import pytest
 
-from mrz_ai.evaluation.real import RealDocument, load_real_set, measure_real
+from mrz_ai.evaluation.real import RealDocument, default_box, load_real_set, measure_real
 from mrz_ai.parser import serialize
 from mrz_ai.serve.crop import Box
 from mrz_ai.synthetic.identity import IdentityConfig, random_identity
@@ -237,3 +237,40 @@ def test_a_box_around_the_mrz_locates_it_on_the_same_page() -> None:
     result = measure_real(FakeReader(line1, line2), [document])
     assert result.not_located == 0
     assert result.documents_read == 1
+
+
+def test_a_data_page_defaults_to_the_zone_the_standard_puts_the_mrz_in() -> None:
+    """Not detection — arithmetic. ICAO fixes the TD3 page at 125x88mm and puts
+    the zone 74.07mm down it, so the MRZ is the bottom sixth of any data page and
+    no model is needed to say where. Measured: the whole image reads 0 of 4, this
+    reads 4 of 4."""
+    mrz = serialize(random_identity(random.Random(700), IdentityConfig()))
+    line1, line2 = mrz.split("\n")
+    page = a_page(mrz)
+    document = RealDocument(
+        name="page_pass.png", image=page, box=default_box(page), line1=line1, line2=line2
+    )
+
+    result = measure_real(FakeReader(line1, line2), [document])
+    assert result.not_located == 0, "the spec's own geometry did not find the MRZ"
+    assert result.documents_read == 1
+
+
+def test_an_already_cropped_strip_defaults_to_itself() -> None:
+    """The other half, and the reason the shape is checked at all: an MRZ strip
+    given the bottom third of itself loses line 1 completely."""
+    strip = np.asarray(render_mrz("\n".join(SPECIMEN), dpi=250.0).image)
+    box = default_box(strip)
+    assert (box.x, box.y) == (0.0, 0.0)
+    assert (box.width, box.height) == (float(strip.shape[1]), float(strip.shape[0]))
+
+
+def test_the_two_shapes_are_told_apart_by_being_different_shapes() -> None:
+    """A TD3 page is 1.4:1 and two MRZ lines are nearer 12:1. Nothing lands
+    between, which is why this can be inferred rather than configured."""
+    page = np.zeros((880, 1250), np.uint8)
+    strip = np.asarray(render_mrz("\n".join(SPECIMEN), dpi=250.0).image)
+
+    assert default_box(page).height < page.shape[0], "a page was read as a strip"
+    assert default_box(strip).height == float(strip.shape[0]), "a strip was read as a page"
+    assert strip.shape[1] / strip.shape[0] > 5.0 > 1250 / 880

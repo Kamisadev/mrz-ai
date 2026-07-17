@@ -142,12 +142,18 @@ Specimen passports are what belongs there: real printing, real typeface, invente
 identities. The issuer's choice of OCR-B cut is the axis that broke the last
 checkpoint, and a specimen carries it without carrying anybody's passport number.
 
-Give every full page a box in `truth.json`. There is no detector, and a page is
-not an MRZ strip: `crop.py` looks for two bands of ink on pale paper, and a page
-has ink in the photo, the fields and the guilloche. Measured, a full page reads
-**0 of 4 documents at 8.8% of characters** and the same page with a box reads
-**4 of 4 at 100%** — a cropping failure wearing a recognizer's clothes, which is
-the one thing this set exists to tell apart. It is counted and reported as itself.
+No box needed, for a data page or an MRZ strip alike — and not because anything
+detects one. ICAO fixes the TD3 page at 125x88mm and puts the zone 74.07mm down
+it, so the MRZ is the bottom 16% of any data page: arithmetic, not a model. A page
+is 1.4:1 and two MRZ lines are nearer 12:1, so the two cases are told apart by
+shape. Where that fails, a `box` in `truth.json` says where to look.
+
+The failure is loud, which matters more than the default being right. Handed
+something with ink all over it, `crop.py`'s two-band search gives up and halves the
+region — measured, a whole page passed in as-is reads **0 of 4 documents at 8.8%
+of characters**, a cropping failure in a recognizer's clothes. That is exactly the
+confusion this set exists to prevent, so it is counted (`not_located`) and reported
+before any score.
 
 ## Watching a run
 
@@ -187,7 +193,7 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-900 tests, `mypy --strict` clean.
+904 tests, `mypy --strict` clean.
 
 See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
 and `docs/synthetic.md` for the generator's — including four bugs that only showed up by

@@ -45,6 +45,7 @@ __all__ = [
     "RealDocument",
     "RealResult",
     "REAL_DIR",
+    "default_box",
     "load_real_set",
     "measure_real",
 ]
@@ -52,6 +53,42 @@ __all__ = [
 #: Where the set lives. Ignored by git as a whole directory; see docs/real.md.
 REAL_DIR = Path("real")
 _SUFFIXES = {".jpg", ".jpeg", ".png"}
+
+#: Wider than this and the image is taken to be an MRZ strip rather than a data
+#: page. A TD3 page is 125x88mm — 1.4:1. Two MRZ lines with margins are nearer
+#: 12:1, since a line is 44 characters at 2.54mm against a 3.2mm cap height.
+#: Nothing lands between, so the two cases are told apart by shape and not by a
+#: flag somebody has to remember to set.
+_STRIP_ASPECT = 5.0
+#: The MRZ's share of a TD3 page, from `synthetic.geometry`: the zone starts
+#: 74.07mm down an 88mm page, so it is the bottom 15.8%. Doubled, because a
+#: photograph is of a page and not a scan of one — and being loose is free here,
+#: since `crop.py` finds the ink inside whatever it is given. This is the same
+#: guess the web reader offers a user, and it comes from the specification rather
+#: than from a detector, which is why it can be a default at all.
+_PAGE_MRZ_TOP = 0.66
+_PAGE_MRZ_HEIGHT = 0.34
+
+
+def default_box(image: Array) -> Box:
+    """Where to look for the MRZ when nothing said.
+
+    Not detection — arithmetic on a fixed standard. ICAO 9303 puts the TD3 zone
+    at the foot of a page whose size it also fixes, so the MRZ's share of a data
+    page is a constant and needs no model to find. Phase 3's detector is for
+    photographs of passports lying on desks, where none of that holds.
+
+    Verified on synthetic full pages: the whole image reads 0 of 4 documents,
+    this reads 4 of 4. When it is wrong — a page shot with the desk around it,
+    an odd crop — `Found.banded` is False and `RealResult.not_located` counts it,
+    so a bad guess announces itself rather than being read as a bad model.
+    """
+    height, width = image.shape[:2]
+    if width / max(height, 1) > _STRIP_ASPECT:
+        # Already cropped to the MRZ: the whole image is the box, and taking the
+        # bottom third of it would cut line 1 off entirely.
+        return Box(0.0, 0.0, float(width), float(height))
+    return Box(0.0, height * _PAGE_MRZ_TOP, float(width), height * _PAGE_MRZ_HEIGHT)
 
 
 @dataclass(frozen=True)
@@ -61,11 +98,13 @@ class RealDocument:
     name: str
     image: Array
     #: Where the two MRZ lines are, and nothing else. May be loose — finding the
-    #: ink inside it is what makes that free — but it may not be a whole page.
-    #: `serve.crop` looks for two bands of ink on pale paper, and a page has ink in
-    #: the photo, the fields and the guilloche: 0 of 4 documents at 8.8% of
-    #: characters, measured, against 4 of 4 with a box. Defaults to the whole
-    #: image, which is right only for a photograph already cropped to the MRZ.
+    #: ink inside it is what makes that free — but it may not be a whole page:
+    #: `serve.crop` looks for two bands of ink on pale paper, and a page has ink
+    #: in the photo, the fields and the guilloche. Measured, a whole page reads 0
+    #: of 4 documents at 8.8% of characters, against 4 of 4 with a box.
+    #:
+    #: Defaults to `default_box`, which is arithmetic on the standard rather than
+    #: detection.
     box: Box
     line1: str
     line2: str
@@ -200,10 +239,9 @@ def load_real_set(root: Path | str = REAL_DIR) -> list[RealDocument]:
             if key not in entry:
                 raise ValueError(f"{path.name}: truth has no {key}")
 
-        height, width = image.shape[:2]
         raw = entry.get("box")
         if raw is None:
-            box = Box(0.0, 0.0, float(width), float(height))
+            box = default_box(image)
         else:
             if not isinstance(raw, (list, tuple)) or len(raw) != 4:
                 raise ValueError(f"{path.name}: box must be [x, y, width, height]")

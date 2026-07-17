@@ -34,30 +34,37 @@ slip turn into a permanent point of accuracy. Every image needs truth and every
 truth an image: an unmeasured image would drop out of the denominator and quietly
 improve the score.
 
-### Give every full page a box
+### The box, which you probably do not have to give
+
+No box needed for either a data page or an already-cropped MRZ strip. Both read
+4 of 4 in testing with nothing in `truth.json` but the two lines.
+
+That is not detection. ICAO fixes the TD3 page at 125x88mm and puts the zone
+74.07mm down it, so **the MRZ is the bottom 16% of any data page** — a constant,
+not something to find. `default_box` takes the bottom third to be generous, and
+tells a page from a strip by shape: a page is 1.4:1 and two MRZ lines are nearer
+12:1, with nothing in between. Being loose costs nothing, because `crop.py` finds
+the ink inside whatever it is given and levels it first.
+
+Give a box when the arithmetic does not hold — a page photographed with the desk
+around it, an unusual crop:
 
 ```json
 { "001_pass.jpg": { "line1": "...", "line2": "...", "box": [0, 400, 1130, 130] } }
 ```
 
-**A whole passport page cannot be cropped automatically, and it will not tell you
-so by itself.** `serve/crop.py` looks for two dense bands of ink on pale paper,
-which is what a box drawn around an MRZ contains. A page has ink in the photo, the
-printed fields and the guilloche, so the two-band search fails and the region is
-halved as a guess. Measured on synthetic full pages: **0 of 4 documents, 8.8% of
-characters** — which from the outside is a recognizer that cannot read. The same
-pages with a box read **4 of 4 at 100%**.
+**You will be told when it is needed.** `crop.py` looks for two dense bands of ink
+on pale paper. Given something that is not that, the two-band search fails and the
+region is halved as a guess — measured on whole pages passed in as-is, that read
+**0 of 4 documents at 8.8% of characters**, which from the outside is a recognizer
+that cannot read. So the fallback is counted: `not_located`, reported by the tool
+and the dashboard *before* any score, because a score with that number above zero
+is about the boxes and says nothing about the model.
 
-That is not a bug in `crop.py`; it is `crop.py` being used outside what it is for.
-The web reader has a human draw the box for exactly this reason (`README.md`), and
-the real set has no human, so the box goes in `truth.json`. `not_located` counts
-the pages it could not resolve, and both the tool and the dashboard say so before
-they show a score, because a score with that number above zero is about the boxes
-and not about the model.
-
-The box may be loose — that is the whole point of finding the ink inside it, and
-tilt is handled. It just may not be the entire page. Pre-cropping the images to
-the MRZ zone works equally well and needs no box at all.
+Real detection — finding an MRZ in a photograph of a passport on a desk — is phase
+3, and it is blocked on the Passport Generator rather than on effort. Training a
+detector needs whole pages; the synthetic engine draws bare MRZ strips; and the
+specimens here cannot be trained on without destroying what they are for.
 
 Measure a checkpoint against the set:
 
@@ -135,7 +142,11 @@ lighting, angles, and wear.
 
 ## What it is not
 
-It is not a corpus to grow forever. These are identity documents belonging to
-people: passport number, full name, date of birth, nationality, in one directory,
-in the clear. Hold what is needed to measure and no more, know whose they are and
-that they agreed, and delete them when the measuring is done.
+It is not a corpus to grow forever, and it is not a place for genuine passports.
+Specimens carry the one thing that matters here — the issuer's press, its cut of
+OCR-B, its security print — and carry nobody's identity with it. A real passport
+would buy nothing this does not and would put a real number, name and date of
+birth in a directory, in the clear, on whatever machine measures. If one ever
+does end up here, it is PII: it does not go on a pod, `not_located` and the
+confusion pairs are still all the dashboard may show of it, and it goes when the
+measuring does.

@@ -5,6 +5,6 @@ Kept out of `inference` and out of `training` on purpose: it needs both, plus
 number comes from something the generator did not draw.
 """
 
-from .real import RealDocument, RealResult, load_real_set, measure_real
+from .real import RealDocument, RealResult, default_box, load_real_set, measure_real
 
-__all__ = ["RealDocument", "RealResult", "load_real_set", "measure_real"]
+__all__ = ["RealDocument", "RealResult", "default_box", "load_real_set", "measure_real"]
