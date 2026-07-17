@@ -35,16 +35,55 @@ from ..synthetic.dataset import DatasetConfig, MRZLineDataset
 from .status import Status, StatusWriter
 
 
+def _cgroup_quota() -> int | None:
+    """Cores this container is permitted by its cgroup, or ``None`` if unlimited.
+
+    Both cgroup versions, because a pod may be either: v2 puts ``"quota period"``
+    (or ``"max period"``) in one file, v1 splits them across two and writes -1 for
+    unlimited.
+    """
+    try:  # cgroup v2
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        if quota != "max":
+            return max(1, int(float(quota) / float(period)))
+        return None
+    except (OSError, ValueError):
+        pass
+    try:  # cgroup v1
+        v1_quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+        v1_period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+        if v1_quota > 0 and v1_period > 0:
+            return max(1, v1_quota // v1_period)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def usable_cores() -> int:
     """How many cores this process may actually run on.
 
-    ``sched_getaffinity`` is the honest answer and is what a training pod needs:
-    ``cpu_count`` reports the host's cores, and a container is routinely given
-    fewer. It is Linux-only, so everywhere else falls back to the count.
+    Three answers, and the smallest wins, because a container can be limited by
+    any of them independently.
+
+    ``cpu_count`` is the host's cores and means nothing here. ``sched_getaffinity``
+    was written down as "the honest answer" and is not: it reports the CPU *mask*,
+    while a container is routinely throttled by a cgroup **quota** instead — which
+    leaves the mask wide open. Measured on a rented 32-vCPU pod, affinity said 256
+    and training spawned 256 workers onto 32 cores' worth of quota: 11.5 it/s where
+    32 cores should give 30, a 2.6x loss to processes fighting each other for the
+    same time slices.
+
+    The quota is what the scheduler actually enforces, so it has to be read. Note
+    that no number printed anywhere said 256 was wrong — the run looked healthy and
+    was simply slow, which is the kind of bug that survives.
     """
+    limits = [os.cpu_count() or 4]
     if hasattr(os, "sched_getaffinity"):
-        return len(os.sched_getaffinity(0))
-    return os.cpu_count() or 4
+        limits.append(len(os.sched_getaffinity(0)))
+    quota = _cgroup_quota()
+    if quota is not None:
+        limits.append(quota)
+    return max(1, min(limits))
 
 
 @dataclass(frozen=True)
@@ -376,6 +415,9 @@ def train_recognition(config: TrainConfig | None = None) -> Path:
     history: list[dict[str, object]] = []
     step = 0
     started = time.perf_counter()
+    #: Where the last it/s window began. Separate from ``started``, which is the
+    #: wall clock for the whole run and belongs to elapsed, not to the rate.
+    rate_step, rate_at = 0, started
 
     status = StatusWriter(
         output_dir,
@@ -443,8 +485,18 @@ def train_recognition(config: TrainConfig | None = None) -> Path:
                     ema.update(model)
 
                     if step % config.log_every == 0:
-                        elapsed = time.perf_counter() - started
-                        rate = step / elapsed
+                        now = time.perf_counter()
+                        elapsed = now - started
+                        # Over the last window, not since the run began. Written
+                        # as step/elapsed, this reported the cumulative average:
+                        # it climbed 0.7 -> 6.5 over 2,000 steps and never
+                        # reached the truth, because a two-minute worker spawn
+                        # stays in the denominator forever. Reading the real
+                        # 11.5 it/s off that log meant fitting a curve to it.
+                        # A pod is rented by the minute; the rate now is the
+                        # number being asked for.
+                        rate = (step - rate_step) / max(now - rate_at, 1e-9)
+                        rate_step, rate_at = step, now
                         print(f"  step {step:6d}  loss {loss.item():.4f}  "
                               f"lr {optimizer.param_groups[0]['lr']:.2e}  {rate:.1f} it/s")
                         status.update(
