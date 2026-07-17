@@ -28,6 +28,21 @@ box the search is one-dimensional and the answer is checkable: two dark bands on
 pale paper, in a region already known to hold exactly them. That is testable
 against the synthetic engine's own ground-truth line boxes, and is.
 
+*Why the tilt is corrected first.* That one-dimensional search assumes the text
+is level, and the assumption is far more brittle than it looks. ICAO puts the two
+lines 4.23mm apart with a cap height of 3.2mm, so barely 1mm of paper separates
+them — across a line 111.76mm long. Tilt the page by more than
+``asin(1.03/111.76)`` = **0.53 degrees** and the far end of line 1 sinks into the
+rows of line 2: the projection sees one band where there are two, and there is no
+angle of view from which a row profile can tell them apart again.
+
+Measured, that was exactly the cliff. A clean render read 100% of documents level
+and fell to 0% at 5 degrees, and the two-band search had in fact stopped working
+at 0.75 — everything between was the halving fallback getting lucky and the
+recognizer's own 1.5 degrees of trained skew tolerance absorbing the rest. Both
+of those are accidents, not features, and a photograph taken by hand is not
+level. So the skew is measured and removed before anything looks for a band.
+
 Free of torch and of the web framework: this is image arithmetic.
 """
 
@@ -40,7 +55,17 @@ import numpy as np
 
 Array = np.ndarray
 
-__all__ = ["Box", "Line", "decode_image", "locate_lines", "split_lines"]
+__all__ = [
+    "Box",
+    "Found",
+    "Line",
+    "decode_image",
+    "deskew",
+    "find_lines",
+    "locate_lines",
+    "skew_angle",
+    "split_lines",
+]
 
 #: Below this a split is meaningless — in practice a box this small is a mis-drag.
 _MIN_SIDE = 8
@@ -53,6 +78,31 @@ _MIN_BAND = 3
 #: Padding added around found text, in fractions of its own height. Sits inside
 #: the 0.3 the recognizer was trained to tolerate.
 _PAD = 0.15
+
+#: How far from level the text is allowed to be. A hand-held photograph of a page
+#: on a desk is a few degrees out; a passport at 20 degrees is a different picture
+#: than this tool is for, and searching that far mostly buys chances to lock onto
+#: something that is not the MRZ.
+_MAX_SKEW_DEG = 15.0
+#: The coarse sweep's step, then the fine sweep's. The fine one is what matters:
+#: the whole reason to do this is that half a degree separates two bands from one,
+#: so an estimate good to a degree would not have been worth making.
+_SKEW_COARSE_DEG = 1.0
+_SKEW_FINE_DEG = 0.05
+#: Below this, leave the pixels alone. Rotating an image resamples every pixel in
+#: it, and the glyphs here are 16px wide — a level scan re-rendered to correct a
+#: hundredth of a degree comes back very slightly blurrier and no straighter.
+_SKEW_DEADBAND_DEG = 0.15
+#: Fewer ink pixels than this and the estimate is being made from noise. Returning
+#: zero is the honest answer: not "level", but "no evidence of tilt".
+_MIN_INK_PX = 200
+#: Width the region is shrunk to before the angle is measured, when it is wider.
+#: An angle survives a uniform scale, and the sweep's cost is the ink pixel count
+#: times the number of candidates: on a 12MP photograph, measuring at full size
+#: cost 120ms against the 25ms the reading itself takes. A 44-character line at
+#: this width still leaves ~22px per character, which is more than the recognizer
+#: is given.
+_SKEW_WORK_PX = 1000
 
 
 @dataclass(frozen=True)
@@ -81,6 +131,23 @@ class Line:
     #: looks exactly like a model that cannot read. It is a suspicion, not a
     #: finding — an MRZ genuinely at the edge of a photograph trips it too.
     clipped: bool
+
+
+@dataclass(frozen=True)
+class Found:
+    """The two lines, and the image whose pixels their boxes are counted in.
+
+    The image travels with the boxes because it is not the one that was uploaded:
+    it has been rotated to level the text. Handing back boxes alone would invite
+    the caller to cut them out of the original photograph, where they address the
+    wrong paper by exactly the tilt that was removed — and would do it silently,
+    since a box is a box.
+    """
+
+    lines: tuple[Line, Line]
+    image: Array
+    #: Degrees of tilt taken out. Zero when the text was already level.
+    skew_deg: float
 
 
 def decode_image(data: bytes) -> Array:
@@ -183,6 +250,115 @@ def _tighten(region: Array, top: int, bottom: int) -> tuple[tuple[int, int, int,
     return box, clipped
 
 
+def _sharpness(ys: Array, xs: Array, degrees: float, bins: int, offset: int) -> float:
+    """How tightly the ink stacks into rows once sheared by ``degrees``.
+
+    The sum of the squared row counts. It peaks when the ink piles into as few
+    rows as possible, which for two straight lines of text is exactly when they
+    are level — every character of a line lands in the same rows as every other,
+    and the paper between the lines is left empty. Any tilt smears both lines
+    across more rows and flattens the profile, so the sum of squares drops.
+
+    Squared, not summed: the count is conserved whatever the angle, so anything
+    linear in it is constant and measures nothing. It is the concentration that
+    carries the signal.
+
+    ``offset`` and ``bins`` must leave room for the largest shear the caller will
+    ask about. Clamping instead of making room does not merely lose the overflow
+    — it stacks it, and a pile of ink against the end of the profile scores like
+    a beautifully sharp line. Written that way, this returned the widest angle in
+    the sweep for every input, tilted or level.
+    """
+    shifted = ys - xs * np.tan(np.radians(degrees))
+    binned = np.rint(shifted).astype(np.int64) + offset
+    profile = np.bincount(binned, minlength=bins).astype(np.float64)
+    return float((profile**2).sum())
+
+
+def _search(ys: Array, xs: Array, span: tuple[int, int], low: float, high: float, step: float
+            ) -> float:
+    bins, offset = span
+    angles = np.arange(low, high + step / 2, step)
+    scores = [_sharpness(ys, xs, float(angle), bins, offset) for angle in angles]
+    return float(angles[int(np.argmax(scores))])
+
+
+def skew_angle(image: Array, box: Box) -> float:
+    """How far the text inside ``box`` is tilted from level, in degrees.
+
+    Positive means the line runs downhill to the right. Shears the ink's own
+    coordinates rather than rotating the image once per candidate angle: the
+    answer is identical for the small angles that matter, and it costs one
+    ``nonzero`` call plus some arithmetic instead of a hundred image warps.
+
+    Coarse to fine, because the score is not smooth enough to trust a hill climb
+    — a sweep at ``_SKEW_COARSE_DEG`` cannot miss the peak, and a second sweep
+    around it buys the precision this actually needs.
+    """
+    left, top, right, bottom = _clamped(image, box)
+    region = image[top:bottom, left:right]
+    if region.shape[1] > _SKEW_WORK_PX:
+        # Uniformly, or the shrinking would itself shear the text and the answer
+        # would come back scaled by the aspect ratio it was measured through.
+        ratio = _SKEW_WORK_PX / region.shape[1]
+        region = cv2.resize(
+            region,
+            (_SKEW_WORK_PX, max(int(round(region.shape[0] * ratio)), 1)),
+            interpolation=cv2.INTER_AREA,
+        )
+    rows, columns = region.shape[:2]
+
+    ys_int, xs_int = np.nonzero(_ink(region))
+    if ys_int.size < _MIN_INK_PX:
+        return 0.0
+
+    ys = ys_int.astype(np.float64)
+    # Shear about the region's middle, so the ink cannot slide off the profile's
+    # end at one angle and be scored on fewer pixels than at another.
+    xs = xs_int.astype(np.float64) - columns / 2.0
+
+    # Room for the whole sweep. Half the width, levered by the steepest angle
+    # allowed, is the furthest any pixel can travel — plus one for the rounding.
+    reach = int(np.ceil(columns / 2.0 * np.tan(np.radians(_MAX_SKEW_DEG)))) + 1
+    span = (rows + 2 * reach, reach)
+
+    coarse = _search(ys, xs, span, -_MAX_SKEW_DEG, _MAX_SKEW_DEG, _SKEW_COARSE_DEG)
+    fine = _search(
+        ys, xs, span, coarse - _SKEW_COARSE_DEG, coarse + _SKEW_COARSE_DEG, _SKEW_FINE_DEG
+    )
+    return 0.0 if abs(fine) < _SKEW_DEADBAND_DEG else fine
+
+
+def deskew(image: Array, box: Box) -> tuple[Array, float]:
+    """The image rotated until the text in ``box`` is level, and the angle removed.
+
+    Rotated about the box's own centre and kept at the original size, so every
+    coordinate inside the box still means what it meant — the caller's ``box``
+    goes on addressing the same paper, and only the paper has turned. Pixels near
+    the frame's edge rotate out of view, which is of no consequence: the MRZ is
+    at the centre of the selection by construction.
+
+    Returns the image untouched when the text is already level. That is not an
+    optimisation, it is the correctness case: a rotation resamples every pixel,
+    and there is nothing to be won by softening a scan that was straight.
+    """
+    angle = skew_angle(image, box)
+    if angle == 0.0:
+        return image, 0.0
+
+    centre = (box.x + box.width / 2.0, box.y + box.height / 2.0)
+    matrix = cv2.getRotationMatrix2D(centre, angle, 1.0)
+    height, width = image.shape[:2]
+    leveled = cv2.warpAffine(
+        image,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    return leveled, angle
+
+
 def _clamped(image: Array, box: Box) -> tuple[int, int, int, int]:
     height, width = image.shape[:2]
 
@@ -237,10 +413,26 @@ def locate_lines(image: Array, box: Box) -> tuple[Line, Line]:
     return found[0], found[1]
 
 
+def find_lines(image: Array, box: Box) -> Found:
+    """Level the text inside ``box``, then find its two lines. The whole job.
+
+    ``locate_lines`` is kept separate and given a level region deliberately: it
+    is the piece that can be checked against the synthetic engine's ground-truth
+    boxes, and it stays checkable only while its assumption is somebody else's
+    responsibility to satisfy.
+    """
+    leveled, angle = deskew(image, box)
+    first, second = locate_lines(leveled, box)
+    return Found(lines=(first, second), image=leveled, skew_deg=angle)
+
+
 def split_lines(image: Array, box: Box) -> tuple[Array, Array]:
     """The crops of the two MRZ lines inside ``box``: line 1 and line 2."""
-    first, second = locate_lines(image, box)
-    return _cut(image, first.box), _cut(image, second.box)
+    found = find_lines(image, box)
+    return (
+        _cut(found.image, found.lines[0].box),
+        _cut(found.image, found.lines[1].box),
+    )
 
 
 def _cut(image: Array, box: Box) -> Array:

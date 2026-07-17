@@ -23,7 +23,15 @@ from mrz_ai.parser import serialize
 from mrz_ai.synthetic.degrade import DegradeConfig, degrade
 from mrz_ai.synthetic.identity import IdentityConfig, random_identity
 from mrz_ai.synthetic.render import render_mrz
-from mrz_ai.serve.crop import Box, decode_image, locate_lines, split_lines
+from mrz_ai.serve.crop import (
+    Box,
+    decode_image,
+    deskew,
+    find_lines,
+    locate_lines,
+    skew_angle,
+    split_lines,
+)
 
 
 def boxes(image, box):
@@ -271,3 +279,156 @@ def test_crop_does_not_need_torch() -> None:
     program = "import sys; sys.modules['torch'] = None\nimport mrz_ai.serve.crop\nprint('ok')"
     result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
     assert result.returncode == 0, f"importing without torch failed:\n{result.stderr}"
+
+
+# --------------------------------------------------------------------------
+# levelling the text before anything looks for a band
+# --------------------------------------------------------------------------
+
+
+def a_tilted_page(degrees: float, seed: int = 1000):
+    """A rendered MRZ turned by ``degrees``, and a loose box around where it is.
+
+    Bordered generously before turning. The renderer draws a bare MRZ strip barely
+    taller than its two lines, and rotating that in place swings the ends of a
+    111mm line straight out of the picture — which looks like a skew estimator
+    that degrades with angle, and is nothing of the sort. That artefact cost real
+    time to see through once already.
+    """
+    mrz = serialize(random_identity(random.Random(seed), IdentityConfig()))
+    rendered = render_mrz(mrz, dpi=250.0)
+    margin = 200
+    page = cv2.copyMakeBorder(
+        np.asarray(rendered.image), margin, margin, margin, margin,
+        cv2.BORDER_CONSTANT, value=255,
+    )
+    left, top, right, bottom = (value + margin for value in rendered.mrz_box)
+
+    height, width = page.shape[:2]
+    matrix = cv2.getRotationMatrix2D((width / 2, height / 2), degrees, 1.0)
+    tilted = cv2.warpAffine(
+        page, matrix, (width, height), flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=255,
+    )
+
+    slack = 0.3 * (bottom - top)
+    box = Box(
+        x=float(left - slack), y=float(top - slack),
+        width=float(right - left + 2 * slack), height=float(bottom - top + 2 * slack),
+    )
+    return tilted, box
+
+
+@pytest.mark.parametrize("degrees", [-8.0, -5.0, -2.0, -0.8, 0.8, 2.0, 5.0, 8.0])
+def test_the_tilt_is_measured_back_out(degrees: float) -> None:
+    """Turning the page by a known angle and asking what it is.
+
+    Sign included: an estimator that is confidently backwards would double the
+    tilt instead of removing it, and an unsigned check would pass.
+    """
+    tilted, box = a_tilted_page(degrees)
+    # cv2 turns anticlockwise for a positive angle; the module calls a line that
+    # runs downhill to the right positive. They are opposites.
+    assert skew_angle(tilted, box) == pytest.approx(-degrees, abs=0.5)
+
+
+def test_level_text_is_called_level() -> None:
+    tilted, box = a_tilted_page(0.0)
+    assert skew_angle(tilted, box) == 0.0
+
+
+def test_deskewing_a_level_page_does_not_touch_its_pixels() -> None:
+    """Not an optimisation — the correctness case.
+
+    A rotation resamples every pixel. Glyphs reach the recognizer 16px wide, so
+    re-rendering a straight scan to take out a hundredth of a degree returns it
+    very slightly softer and no straighter.
+    """
+    tilted, box = a_tilted_page(0.0)
+    leveled, angle = deskew(tilted, box)
+    assert angle == 0.0
+    assert leveled is tilted
+
+
+@pytest.mark.parametrize("degrees", [-8.0, -3.0, 3.0, 8.0])
+def test_deskewing_leaves_the_text_level(degrees: float) -> None:
+    tilted, box = a_tilted_page(degrees)
+    leveled, angle = deskew(tilted, box)
+    assert angle != 0.0
+    assert abs(skew_angle(leveled, box)) < 0.5
+
+
+def test_paper_with_no_ink_on_it_claims_no_tilt() -> None:
+    """Zero here means "no evidence", not "measured level"."""
+    blank = np.full((200, 800), 250, dtype=np.uint8)
+    assert skew_angle(blank, Box(0.0, 0.0, 800.0, 200.0)) == 0.0
+
+
+def test_the_sweep_does_not_run_to_its_own_edge() -> None:
+    """A regression on the bug that made the first version useless.
+
+    Scoring the sheared rows by clamping them into the region's height stacks
+    everything that overflows against row 0 — and a pile of ink scores exactly
+    like a sharply-stacked line. Written that way this returned the widest angle
+    in the sweep for every input, level pages included. Any estimate sitting on
+    the limit is that bug, whatever the picture.
+    """
+    for degrees in (0.0, 1.0, -1.0, 4.0):
+        tilted, box = a_tilted_page(degrees)
+        assert abs(skew_angle(tilted, box)) < 14.0
+
+
+def test_the_angle_survives_being_measured_at_a_smaller_size() -> None:
+    """The estimate is made on a shrunk copy when the box is wide. An angle is
+    scale-invariant, so this must not change the answer — and would silently, if
+    the shrink were ever made non-uniform."""
+    tilted, box = a_tilted_page(4.0)
+    big = cv2.resize(tilted, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
+    scaled = Box(box.x * 2, box.y * 2, box.width * 2, box.height * 2)
+    assert skew_angle(big, scaled) == pytest.approx(skew_angle(tilted, box), abs=0.3)
+
+
+def test_half_a_degree_of_tilt_hides_one_line_inside_the_other() -> None:
+    """The measurement the whole thing is built on, kept honest.
+
+    ICAO's two lines are 4.23mm apart with a cap height of 3.2mm, so 1.03mm of
+    paper separates them across a line 111.76mm long: past asin(1.03/111.76) =
+    0.53 degrees, the far end of line 1 lands in the rows of line 2 and a row
+    profile cannot tell them apart. Below that the search sees two bands; above,
+    one. If this ever stops failing, the geometry moved and the deskew's whole
+    reason went with it.
+    """
+    level, box = a_tilted_page(0.0)
+    assert len(_bands(level, box)) == 2
+
+    tilted, box = a_tilted_page(1.5)
+    assert len(_bands(tilted, box)) == 1, "the bands stayed apart; re-check the arithmetic"
+
+    leveled, _ = deskew(tilted, box)
+    assert len(_bands(leveled, box)) == 2, "deskewing did not bring the two bands back"
+
+
+def _bands(image, box):
+    """What the two-band search sees, without the halving fallback hiding it."""
+    from mrz_ai.serve.crop import _ink, _runs, _MIN_BAND, _ROW_INK, _clamped
+
+    left, top, right, bottom = _clamped(image, box)
+    profile = _ink(image[top:bottom, left:right]).sum(axis=1) / 255.0
+    return _runs(profile > profile.max() * _ROW_INK, _MIN_BAND) if profile.max() > 0 else []
+
+
+def test_find_lines_hands_back_the_image_its_boxes_belong_to() -> None:
+    """Cutting the boxes out of the original photograph would miss by the tilt."""
+    tilted, box = a_tilted_page(5.0)
+    found = find_lines(tilted, box)
+    assert found.skew_deg != 0.0
+    assert found.image is not tilted
+    assert len(found.lines) == 2
+
+
+def test_a_tilted_page_still_yields_two_line_crops() -> None:
+    tilted, box = a_tilted_page(6.0)
+    first, second = split_lines(tilted, box)
+    for crop in (first, second):
+        assert crop.size > 0
+        assert crop.shape[1] > crop.shape[0] * 10, "an MRZ line is about 44:1"

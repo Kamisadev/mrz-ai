@@ -72,6 +72,23 @@ and stops depending on how carefully anyone dragged. The box being loose is free
 The box clipping a character is not — so the page says when it thinks that
 happened, rather than quietly returning a confident misreading.
 
+The box being *tilted* used to cost everything, and now costs nothing. ICAO sets
+the two lines 4.23mm apart with a cap height of 3.2mm: 1.03mm of paper separates
+them, across a line 111.76mm long. Past `asin(1.03/111.76)` = **0.53 degrees** the
+far end of line 1 sinks into the rows of line 2, and no row projection can tell
+them apart again. Measured, a clean render read 100% of documents level and **0%
+at 5 degrees** — and the two-band search had actually stopped working at 0.75,
+with everything in between being the halving fallback getting lucky and the
+recognizer's 1.5 degrees of trained skew tolerance absorbing the rest. A
+photograph taken by hand is not level, so `serve/crop.py` now measures the skew
+and rotates it out first: **100% at 8 degrees**, 24ms on a 12MP photo.
+
+Note where that hole came from. The training pipeline warps a quadrilateral onto
+a rectangle, so it was never sensitive to tilt — but the quad came from ground
+truth. Serving had no quad and no detector to produce one, so it passed an
+axis-aligned box to code that assumed level text, and the assumption was never
+written down anywhere to be doubted.
+
 ## The known risk
 
 There are no real passport images in this project. Everything the model learns
@@ -125,7 +142,7 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-852 tests, `mypy --strict` clean.
+872 tests, `mypy --strict` clean.
 
 See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
 and `docs/synthetic.md` for the generator's — including four bugs that only showed up by

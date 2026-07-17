@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..inference.candidates import Reading
-from .crop import Box, decode_image, locate_lines
+from .crop import Box, decode_image, find_lines
 from .payload import as_payload
 
 Array = np.ndarray
@@ -109,14 +109,17 @@ def create_app(reader: Reader | None = None, *, checkpoint: Path = CHECKPOINT) -
         try:
             picture = decode_image(data)
             box = Box(x=x, y=y, width=width, height=height)
-            first, second = locate_lines(picture, box)
+            found = find_lines(picture, box)
         except ValueError as error:
             # A bad upload or a bad drag is the user's to fix, not a server fault.
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+        first, second = found.lines
         year = reference_year or date.today().year
+        # Cut from `found.image`, not `picture`: the tilt has been rotated out of
+        # the former and the boxes are counted in its pixels.
         reading = app.state.reader.read(
-            _cut(picture, first.box), _cut(picture, second.box), reference_year=year
+            _cut(found.image, first.box), _cut(found.image, second.box), reference_year=year
         )
 
         body = as_payload(reading, reference_year=year)
@@ -130,6 +133,15 @@ def create_app(reader: Reader | None = None, *, checkpoint: Path = CHECKPOINT) -
         # model returns its best guess at characters it was never shown, and the
         # result reads as a bad model rather than a bad crop.
         body["clipped"] = first.clipped or second.clipped
+        # The boxes above are in the levelled frame, so the page has to turn them
+        # back to draw them over the photograph the user is looking at. Sent as
+        # the angle and its pivot rather than as four corners: it is one rotation
+        # about one point, and CSS can express that directly.
+        body["skew"] = {
+            "deg": found.skew_deg,
+            "x": box.x + box.width / 2.0,
+            "y": box.y + box.height / 2.0,
+        }
         return JSONResponse(body)
 
     if STATIC.is_dir():

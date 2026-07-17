@@ -280,15 +280,23 @@ function render(body) {
     issues.append(item);
   }
 
-  drawFound(body.lines, body.valid);
+  drawFound(body.lines, body.valid, body.skew);
 }
 
 /** Outline the crops the server actually read.
  *  A wrong reading over a visibly wrong crop explains itself; the same reading
- *  without it looks like a model that cannot read. */
-function drawFound(lines, valid) {
+ *  without it looks like a model that cannot read.
+ *
+ *  The boxes arrive in the frame the server levelled, so they are turned back by
+ *  the tilt it removed — otherwise a correct reading of a tilted page would be
+ *  drawn beside the text it actually read, and look like the bug it is not.
+ *  Scale-invariant: an angle is an angle at any zoom, and the pivot divides
+ *  through like every other coordinate. */
+function drawFound(lines, valid, skew) {
   found.replaceChildren();
   found.hidden = false;
+  const pivot = skew && skew.deg ? { x: skew.x / scale(), y: skew.y / scale() } : null;
+
   lines.forEach((line, index) => {
     const shown = toDisplay(line);
     const element = document.createElement("div");
@@ -297,6 +305,12 @@ function drawFound(lines, valid) {
     element.style.top = `${shown.y}px`;
     element.style.width = `${shown.width}px`;
     element.style.height = `${shown.height}px`;
+    if (pivot) {
+      // CSS turns clockwise for a positive angle, which is the way back: the
+      // server turned the page the other way to level it.
+      element.style.transformOrigin = `${pivot.x - shown.x}px ${pivot.y - shown.y}px`;
+      element.style.transform = `rotate(${skew.deg}deg)`;
+    }
 
     const number = document.createElement("span");
     number.textContent = index + 1;
