@@ -34,20 +34,28 @@ slip turn into a permanent point of accuracy. Every image needs truth and every
 truth an image: an unmeasured image would drop out of the denominator and quietly
 improve the score.
 
-### The box, which you probably do not have to give
+### The box, which a data page does have to give
 
-No box needed for either a data page or an already-cropped MRZ strip. Both read
-4 of 4 in testing with nothing in `truth.json` but the two lines.
+An already-cropped MRZ strip needs no box. **A data page does**, on current
+evidence: 0 of 15 specimen pages crop without one.
 
-That is not detection. ICAO fixes the TD3 page at 125x88mm and puts the zone
+`default_box` guesses. ICAO fixes the TD3 page at 125x88mm and puts the zone
 74.07mm down it, so **the MRZ is the bottom 16% of any data page** — a constant,
-not something to find. `default_box` takes the bottom third to be generous, and
-tells a page from a strip by shape: a page is 1.4:1 and two MRZ lines are nearer
-12:1, with nothing in between. Being loose costs nothing, because `crop.py` finds
-the ink inside whatever it is given and levels it first.
+not something to find — and `default_box` takes the bottom third to be generous,
+telling a page from a strip by shape (a page is 1.4:1, two MRZ lines nearer 12:1).
+The region is right. It is also not enough: above the MRZ on every issued passport
+sit the authority line and the holder's signature, so the ink comes to three or
+four bands, the two-band search fails, and the region is halved. Being loose is not
+free after all — not on paper somebody actually printed.
 
-Give a box when the arithmetic does not hold — a page photographed with the desk
-around it, an unusual crop:
+This section previously said the opposite, on the strength of 4 of 4 on synthetic
+pages. Those pages were bare strips on blank paper with nothing above the MRZ,
+because that is all the generator draws. The default was checked against the only
+input incapable of contradicting it. The fix is not a cleverer guess — it is the
+Passport Generator, which would draw a page with a signature on it and let a real
+detector be validated on something other than these 15.
+
+So, until then, give a box:
 
 ```json
 { "001_pass.jpg": { "line1": "...", "line2": "...", "box": [0, 400, 1130, 130] } }

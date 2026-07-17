@@ -142,18 +142,27 @@ Specimen passports are what belongs there: real printing, real typeface, invente
 identities. The issuer's choice of OCR-B cut is the axis that broke the last
 checkpoint, and a specimen carries it without carrying anybody's passport number.
 
-No box needed, for a data page or an MRZ strip alike — and not because anything
-detects one. ICAO fixes the TD3 page at 125x88mm and puts the zone 74.07mm down
-it, so the MRZ is the bottom 16% of any data page: arithmetic, not a model. A page
-is 1.4:1 and two MRZ lines are nearer 12:1, so the two cases are told apart by
-shape. Where that fails, a `box` in `truth.json` says where to look.
+Give each data page a `box` in `truth.json`. `default_box` guesses one by
+arithmetic — ICAO fixes the TD3 page at 125x88mm and puts the zone 74.07mm down it,
+so the MRZ is the bottom 16% of any data page — and on a real passport that guess
+is not enough. The region does contain the MRZ. It also contains the authority
+line and the holder's signature, which sit above the MRZ on every issued document,
+so the ink resolves into three or four bands and the two-band search halves the
+region instead. Measured on 15 specimen data pages: **0 of 15 crop**. An
+already-cropped MRZ strip needs nothing.
 
-The failure is loud, which matters more than the default being right. Handed
-something with ink all over it, `crop.py`'s two-band search gives up and halves the
-region — measured, a whole page passed in as-is reads **0 of 4 documents at 8.8%
-of characters**, a cropping failure in a recognizer's clothes. That is exactly the
-confusion this set exists to prevent, so it is counted (`not_located`) and reported
-before any score.
+That number was 4 of 4 on synthetic pages, which is how the default came to be
+believed. The synthetic pages were wrong: the generator draws bare strips on blank
+paper, so its "full page" has nothing above the MRZ to be confused by. The default
+was validated against the one input that could not falsify it — the generator
+grading its own exam, one level up from the fonts.
+
+The failure is loud, which is the part that worked. Handed something with ink all
+over it, `crop.py`'s two-band search gives up and halves the region, and a whole
+page passed in as-is reads **0 of 4 documents at 8.8% of characters** — a cropping
+failure in a recognizer's clothes. That is exactly the confusion this set exists to
+prevent, so it is counted (`not_located`) and reported before any score. It is what
+caught this.
 
 ## Watching a run
 
