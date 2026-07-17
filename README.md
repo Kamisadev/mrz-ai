@@ -127,6 +127,11 @@ Two mitigations: over-randomize the domain rather than under, and acquire a
 held-out set of 50–100 real images for measurement only, never for training.
 Until that set exists, treat every accuracy number as unvalidated.
 
+That set goes in `real/`, which git ignores as a whole directory — this
+repository is public, and a test fails if anything under it is ever tracked. See
+`docs/real.md` for what it needs to be, and for why training on it would destroy
+the only thing it is good for.
+
 ## Training on RunPod
 
 This job is **CPU-bound, not GPU-bound**: the model is 3.4M parameters, but every sample is
@@ -142,7 +147,7 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-872 tests, `mypy --strict` clean.
+874 tests, `mypy --strict` clean.
 
 See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
 and `docs/synthetic.md` for the generator's — including four bugs that only showed up by

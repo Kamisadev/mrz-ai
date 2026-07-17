@@ -12,3 +12,8 @@ checkpoints/
 .DS_Store
 .impeccable/
 recognition_model/
+# Real passports, held out for measurement. Ignored as a whole directory with no
+# negated pattern inside it, deliberately: this repository is public, and a
+# mistyped exception glob would put somebody's identity document on GitHub
+# permanently. Anything that needs tracking about this set lives in docs/real.md.
+/real/
