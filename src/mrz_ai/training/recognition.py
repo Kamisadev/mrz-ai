@@ -308,7 +308,19 @@ def train_recognition(config: TrainConfig | None = None) -> Path:
     print(f"input: {config.input_geometry.height}x{config.input_geometry.width}, "
           f"{config.input_geometry.num_tokens} tokens, "
           f"{config.input_geometry.pixels_per_char:.0f}px/char")
-    print(f"steps: {config.total_steps} over {len(config.curriculum)} stages\n")
+    print(f"steps: {config.total_steps} over {len(config.curriculum)} stages")
+
+    # Say the fonts out loud. A run that trained on one cut of OCR-B is a run
+    # that has to be thrown away — the last one was, after scoring 99.5% and
+    # misreading real passports — and there is nothing in the loss curve that
+    # would ever tell you. A pod holding a stale checkout is all it takes.
+    fonts = DatasetConfig().fonts
+    names = ", ".join(Path(path).name for path in fonts)
+    print(f"fonts: {len(fonts)} cut(s) of OCR-B — {names}")
+    if len(fonts) < 2:
+        print("  WARNING: one font means the model learns these outlines, not the "
+              "letters. Pull the repo; see tools/font_gap.py.")
+    print()
 
     history: list[dict[str, object]] = []
     step = 0
