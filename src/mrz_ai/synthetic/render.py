@@ -16,13 +16,43 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+import cv2
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from ..parser import fields as F
 from ..parser.charset import ALPHABET, is_mrz_char
 from .geometry import PageGeometry, mm_to_px
 
-FONT_PATH = Path(__file__).resolve().parents[3] / "assets" / "fonts" / "OCR-B.ttf"
+FONTS_DIR = Path(__file__).resolve().parents[3] / "assets" / "fonts"
+FONT_PATH = FONTS_DIR / "OCR-B.ttf"
+
+#: Every cut of OCR-B we can train on, and the reason there is more than one.
+#:
+#: ICAO 9303 names a typeface, not an outline. The cuts of OCR-B differ — enough
+#: that a model trained on exactly one of them reads the other at 72% of
+#: documents on a *clean, undegraded* render, with confusions on 0->O, J->U and
+#: G->S: the shapes a reader must tell apart. That model had not learned what a
+#: '0' is; it had learned what this vendor's '0' is, and a real passport is
+#: printed with whichever cut its issuer bought.
+#:
+#: So the font is randomized like any other nuisance parameter. Two is not many —
+#: more cuts would be better — but the difference between one and two is the
+#: difference between memorizing an outline and having to find the letter in it.
+MRZ_FONTS: tuple[Path, ...] = (
+    FONTS_DIR / "OCR-B.ttf",   # SIL OFL 1.1; see OCR-B-LICENSE.md
+    FONTS_DIR / "OCRB.ttf",    # Skala / Schwarz; see README.md
+)
+
+
+def available_fonts() -> tuple[str, ...]:
+    """The cuts of OCR-B present on disk, best-effort.
+
+    Missing a font is not fatal — a checkout without the assets should still
+    render — but training on one when two were intended is a silent loss of
+    variety, so the caller is told what it actually got.
+    """
+    return tuple(str(path) for path in MRZ_FONTS if path.exists())
 
 #: Ink and paper as 8-bit greyscale. Real MRZ ink is not pure black, and the
 #: degradation stage moves both of these around.
@@ -104,11 +134,25 @@ def render_mrz(
     ink: int = INK,
     paper: int = PAPER,
     padding_mm: float = 1.5,
+    font_path: str = str(FONT_PATH),
+    ink_weight: float = 0.0,
 ) -> RenderResult:
     """Render a two-line MRZ on a transparent-free greyscale strip.
 
     The result is just the zone, not a whole page: composing it onto a document
     background is a separate concern.
+
+    ``font_path`` is a parameter because "OCR-B" is not one typeface. The spec
+    names a face; the cuts of it differ, and a model trained on exactly one of
+    them has no way to know which parts of a glyph are the letter and which are
+    this particular vendor's idea of it.
+
+    ``ink_weight`` in [-1, 1] thins or thickens the strokes, standing in for the
+    press. Both of these belong here rather than in `degrade` on purpose: they
+    are properties of how the document was *printed*, not of how it was
+    photographed. `degrade` scales everything by severity, so putting them there
+    would give the clean end of the curriculum exactly one typeface at exactly
+    one weight — which is the hole this is closing.
     """
     geometry = geometry or PageGeometry()
     lines = mrz.split("\n")
@@ -126,9 +170,9 @@ def render_mrz(
     cap_height = mm_to_px(geometry.cap_height_mm, dpi)
     padding = mm_to_px(padding_mm, dpi)
 
-    font_size = font_size_for_cap_height(cap_height)
-    font = load_font(font_size)
-    above, below = ink_extent(font_size)
+    font_size = font_size_for_cap_height(cap_height, font_path)
+    font = load_font(font_size, font_path)
+    above, below = ink_extent(font_size, font_path)
 
     width = round(F.LINE_LENGTH * pitch + 2 * padding)
     height = round(above + below + line_pitch + 2 * padding)
@@ -168,4 +212,27 @@ def render_mrz(
             )
         )
 
+    if ink_weight:
+        image = weigh_ink(image, ink_weight)
+
     return RenderResult(image=image, char_boxes=tuple(char_boxes), line_boxes=tuple(line_boxes))
+
+
+def weigh_ink(image: Image.Image, weight: float) -> Image.Image:
+    """Thin or thicken the strokes: ``weight`` -1 is lightest, +1 heaviest.
+
+    A press is not a plotter. The same typeface comes out heavier or lighter
+    depending on the printer, the ink and the paper, and the strokes of an MRZ
+    are only a few pixels wide at the size the recognizer sees — so a fraction of
+    a pixel either way changes which glyphs are confusable.
+
+    Fractional, by blending against the morphed image: a whole-pixel step at
+    250dpi is a large change in weight, and stepping in whole pixels would train
+    the model on three weights rather than a range.
+    """
+    array = np.asarray(image).astype(np.float32)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    # The ink is dark, so eroding the image spreads the ink and dilating eats it.
+    morphed = (cv2.erode if weight > 0 else cv2.dilate)(array, kernel)
+    blended = array * (1.0 - abs(weight)) + morphed * abs(weight)
+    return Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8))

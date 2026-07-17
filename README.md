@@ -12,7 +12,7 @@ every field is a constant slice and the charset is 37 characters.
 | --- | --- | --- |
 | 0 | ICAO engine — serialize / parse / validate | **done** |
 | 1 | Synthetic engine — OCR-B render + degradation | **done** |
-| 2 | Recognition — ViT-tiny encoder + fixed-length head | **trained** — 99.5% line accuracy at full severity |
+| 2 | Recognition — ViT-tiny encoder + fixed-length head | trained, **needs retraining**: the first run saw one font |
 | 3 | Detection — MRZ zone crop | not started; the user draws the box instead |
 | 4 | Candidate decoder — exact k-best × ICAO validation | **done** |
 | 5 | Export — ONNX / INT8, CLI | |
@@ -79,6 +79,28 @@ comes from the synthetic engine, so the synthetic-to-real gap is the dominant
 risk and almost no internal metric can measure it — synthetic evaluation mostly
 grades the generator against itself.
 
+It is not hypothetical. The first trained checkpoint scored 99.5% line accuracy
+at full severity and misread real passports badly. The cause was one line of the
+generator nobody had thought of as a parameter: **it used a single font.**
+
+"OCR-B" is not one typeface. ICAO 9303 names a face; the cuts of it differ, and
+a model trained on exactly one reads another at **72% of documents on a clean,
+undegraded render** — confusing `0` with `O`, `J` with `U`, `G` with `S`. It had
+not learned what a `0` is. It had learned what one vendor's `0` is, and a real
+passport is printed with whichever cut its issuer bought. `tools/font_gap.py` is
+that experiment, kept so it can be rerun.
+
+The generator now randomizes the *printing* — the cut, and the weight of the ink
+— not just the photographing. Both are drawn independently of severity, since a
+crisp scan of a heavily-inked passport is a clean sample and not a degraded one.
+Note the shape of the miss: everything about the camera was randomized carefully
+and nothing about the press was, because the camera is what "degradation" sounds
+like it means.
+
+Two cuts is not many, and this is not declared fixed. A third cut would be worth
+having — and having put both of ours into training, we no longer hold one out to
+measure generalization with. The remaining honest test is a real passport.
+
 One external check does exist and passes: PassportEye, a stock MRZ reader built
 for real passports, reads our synthetic renders at 12/12 detection and ~97% field
 accuracy (`docs/synthetic.md`). That says the glyphs and pitch are passport-like.
@@ -103,7 +125,7 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-847 tests, `mypy --strict` clean.
+852 tests, `mypy --strict` clean.
 
 See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
 and `docs/synthetic.md` for the generator's — including four bugs that only showed up by
@@ -115,5 +137,10 @@ severity ramp. Your eyes on that sheet are the only real check that exists.
 
 ## License
 
-MIT — see `LICENSE`. The bundled OCR-B font is SIL OFL 1.1 and is not covered by it;
-see `assets/fonts/OCR-B-LICENSE.md`.
+MIT — see `LICENSE`. Neither bundled font is covered by it, and they are not under
+the same terms as each other:
+
+- `OCR-B.ttf` / `OCR-B.otf` — SIL OFL 1.1, see `assets/fonts/OCR-B-LICENSE.md`.
+- `OCRB.ttf` — Skala's conversion of Schwarz's Metafont OCR-B, see
+  `assets/fonts/README.md`. Freely distributable; read its provenance section
+  before shipping commercially.

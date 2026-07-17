@@ -140,3 +140,67 @@ def test_malformed_input_is_rejected(bad: str) -> None:
 def test_a_generated_identity_renders() -> None:
     mrz = serialize(random_identity(random.Random(0)))
     assert render_mrz(mrz).image.size[0] > 0
+
+
+# --------------------------------------------------------------------------
+# the printing, as opposed to the photographing
+# --------------------------------------------------------------------------
+
+
+def test_more_than_one_cut_of_ocr_b_is_available() -> None:
+    """The whole point. One font is how the last model learned outlines, not letters.
+
+    Trained on a single cut, the recognizer read a different cut of OCR-B at 72%
+    of documents — clean, undegraded, same geometry — confusing 0 with O and J
+    with U. If this ever drops back to one, that regression returns silently and
+    only a real passport would reveal it.
+    """
+    from mrz_ai.synthetic.render import available_fonts
+
+    assert len(available_fonts()) >= 2, "the generator is back to a single typeface"
+
+
+def test_the_cuts_are_actually_different() -> None:
+    """Two files are not two typefaces if they are the same outlines."""
+    from mrz_ai.synthetic.render import available_fonts
+
+    first, second = available_fonts()[:2]
+    a = numpy.asarray(render_mrz(SPECIMEN, dpi=150.0, font_path=first).image)
+    b = numpy.asarray(render_mrz(SPECIMEN, dpi=150.0, font_path=second).image)
+
+    # The strips are not the same height, and that is itself the point: a cut's
+    # ink extent is its own, so even the box around the text moves. Compare where
+    # they overlap.
+    rows, columns = min(a.shape[0], b.shape[0]), min(a.shape[1], b.shape[1])
+    differing = float((a[:rows, :columns] != b[:rows, :columns]).mean())
+    assert differing > 0.01, f"the two fonts are the same outlines ({differing:.3%} differ)"
+
+
+def test_ink_weight_thickens_and_thins_the_strokes() -> None:
+    light = numpy.asarray(render_mrz(SPECIMEN, dpi=150.0, ink_weight=-0.8).image)
+    plain = numpy.asarray(render_mrz(SPECIMEN, dpi=150.0).image)
+    heavy = numpy.asarray(render_mrz(SPECIMEN, dpi=150.0, ink_weight=0.8).image)
+
+    # Ink is dark, so more ink means a lower mean.
+    assert heavy.mean() < plain.mean() < light.mean()
+
+
+def test_ink_weight_leaves_the_glyphs_where_they_were() -> None:
+    """Weight is a property of the press, not of the layout.
+
+    If it moved the text, the char_boxes handed to the recognizer as ground
+    truth would no longer say where the characters are.
+    """
+    plain = render_mrz(SPECIMEN, dpi=150.0)
+    heavy = render_mrz(SPECIMEN, dpi=150.0, ink_weight=0.8)
+
+    assert heavy.char_boxes == plain.char_boxes
+    assert heavy.line_boxes == plain.line_boxes
+    assert numpy.asarray(heavy.image).shape == numpy.asarray(plain.image).shape
+
+
+def test_zero_ink_weight_changes_nothing() -> None:
+    plain = numpy.asarray(render_mrz(SPECIMEN, dpi=150.0).image)
+    explicit = numpy.asarray(render_mrz(SPECIMEN, dpi=150.0, ink_weight=0.0).image)
+
+    assert numpy.array_equal(plain, explicit)

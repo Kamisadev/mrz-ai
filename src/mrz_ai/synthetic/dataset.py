@@ -13,7 +13,7 @@ import it cheaply, and it is the same boundary the parser keeps.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -22,7 +22,7 @@ from ..parser import serialize
 from ..parser import fields as F
 from .degrade import DegradeConfig, DegradeResult, degrade
 from .identity import IdentityConfig, random_identity
-from .render import RenderResult, render_mrz
+from .render import RenderResult, available_fonts, render_mrz
 
 Array = np.ndarray
 
@@ -82,8 +82,28 @@ class DatasetConfig:
     epoch_size: int = 100_000
     seed: int = 0
 
+    #: The cuts of OCR-B to draw from, one per document.
+    #:
+    #: Not a nicety. Trained on a single cut, the recognizer read a *different*
+    #: cut of OCR-B — clean, undegraded, same geometry — at 72% of documents,
+    #: confusing 0 with O and J with U. It had learned one vendor's outlines
+    #: rather than the letters, and a real passport is printed with whichever cut
+    #: its issuer bought.
+    fonts: tuple[str, ...] = field(default_factory=available_fonts)
+    #: How far the press may thin or thicken the strokes, in [0, 1]. Drawn per
+    #: document and independent of severity: a pristine scan of a heavily-inked
+    #: passport is a clean sample, not a degraded one.
+    max_ink_weight: float = 0.5
+
     identity: IdentityConfig = IdentityConfig()
     degrade: DegradeConfig = DegradeConfig()
+
+    def __post_init__(self) -> None:
+        if not self.fonts:
+            raise ValueError(
+                "no MRZ fonts found in assets/fonts. Training without them would "
+                "silently produce a model that only reads one cut of OCR-B."
+            )
 
 
 def extract_line(
@@ -181,7 +201,17 @@ class MRZLineDataset:
 
         low, high = config.severity_range
         severity = float(camera_rng.uniform(low, high))
-        rendered = render_mrz(mrz, dpi=config.dpi)
+
+        # How the document was printed, drawn independently of how badly it was
+        # photographed. Its own stream so that adding a font does not shift every
+        # other random draw and silently invalidate a comparison between runs.
+        press_rng = random.Random(seed ^ 0x9E37_79B9)
+        rendered = render_mrz(
+            mrz,
+            dpi=config.dpi,
+            font_path=press_rng.choice(config.fonts),
+            ink_weight=press_rng.uniform(-1.0, 1.0) * config.max_ink_weight,
+        )
         result = degrade(
             np.asarray(rendered.image), np_rng, severity=severity, config=config.degrade
         )
