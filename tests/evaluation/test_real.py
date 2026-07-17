@@ -159,3 +159,81 @@ def test_an_uncroppable_document_counts_as_unread_rather_than_raising() -> None:
     result = measure_real(FakeReader(*SPECIMEN), [document])
     assert result.documents_read == 0
     assert result.chars_total == 88, "an unread document must stay in the denominator"
+
+
+# --------------------------------------------------------------------------
+# a whole passport page is not an MRZ strip
+# --------------------------------------------------------------------------
+
+
+def a_page(mrz: str) -> np.ndarray:
+    """A specimen-ish page: the MRZ at the foot, print and a photo above it.
+
+    Which is what `*_pass.jpg` means, and what every other test in this file
+    quietly was not.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    from mrz_ai.synthetic.render import FONTS_DIR
+
+    rendered = render_mrz(mrz, dpi=250.0)
+    strip = np.asarray(rendered.image)
+    height, width = strip.shape
+
+    page = np.full((height * 5, width), 245, np.uint8)
+    page[-height:, :] = strip
+
+    image = Image.fromarray(page)
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype(str(FONTS_DIR / "OCR-B.ttf"), 22)
+    for index, (label, value) in enumerate(
+        [("Surname/Nom", "ERIKSSON"), ("Given names", "ANNA MARIA"),
+         ("Nationality", "UTOPIA"), ("Date of birth", "12 AUG 1974")]
+    ):
+        draw.text((300, 40 + index * 40), label, fill=120, font=font)
+        draw.text((620, 40 + index * 40), value, fill=20, font=font)
+    draw.rectangle([40, 40, 270, 330], fill=200, outline=90)
+    for y in range(0, height * 4, 7):
+        draw.line([(0, y), (width, y)], fill=236, width=1)
+    return np.asarray(image)
+
+
+def test_a_whole_page_cannot_be_cropped_and_says_so_rather_than_scoring_zero() -> None:
+    """The failure that would have been read as a broken model.
+
+    `crop.py` looks for two dense bands of ink on pale paper, which is what a box
+    drawn around an MRZ contains. A whole page has ink in the photo, the printed
+    fields and the guilloche, so the two-band search fails and the region is
+    halved. Measured: 0 of 4 documents at 8.8% of characters — identical, from the
+    outside, to a recognizer that cannot read, and the exact confusion this whole
+    set exists to prevent. The count must be reported, not inferred.
+    """
+    mrz = serialize(random_identity(random.Random(700), IdentityConfig()))
+    line1, line2 = mrz.split("\n")
+    page = a_page(mrz)
+    document = RealDocument(
+        name="whole_pass.png", image=page,
+        box=Box(0.0, 0.0, float(page.shape[1]), float(page.shape[0])),
+        line1=line1, line2=line2,
+    )
+
+    result = measure_real(FakeReader(line1, line2), [document])
+    assert result.not_located == 1, "a whole page was silently accepted as a crop"
+    assert "NOT CROPPED" in str(result)
+
+
+def test_a_box_around_the_mrz_locates_it_on_the_same_page() -> None:
+    """And the fix, so the diagnosis above is not merely an opinion."""
+    mrz = serialize(random_identity(random.Random(700), IdentityConfig()))
+    line1, line2 = mrz.split("\n")
+    page = a_page(mrz)
+    strip_height = page.shape[0] // 5
+    document = RealDocument(
+        name="boxed_pass.png", image=page,
+        box=Box(0.0, float(page.shape[0] - strip_height * 1.3),
+                float(page.shape[1]), float(strip_height * 1.3)),
+        line1=line1, line2=line2,
+    )
+
+    result = measure_real(FakeReader(line1, line2), [document])
+    assert result.not_located == 0
+    assert result.documents_read == 1

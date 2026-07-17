@@ -86,6 +86,17 @@
     </p>
     <div class="real-empty" id="real-empty">No real set on this run.</div>
     <div id="real-body" hidden>
+      <!-- Shown above the score because it invalidates it. A page the crop stage
+           could not resolve reads as zero, which is indistinguishable from a
+           model that cannot read — and acting on that is how the font fix gets
+           blamed for a bad box. -->
+      <div class="alert" id="real-uncropped" hidden>
+        <strong><span id="uncropped-n">0</span> could not be cropped.</strong>
+        The ink did not resolve into two lines, so the region was halved as a
+        guess. That is the box, not the model &mdash; a whole passport page has ink
+        everywhere. Give each entry a box around the MRZ in truth.json. The score
+        below means nothing until this is zero.
+      </div>
       <div class="score"><span id="real-read">0</span><span class="denom" id="real-total">/ 0</span>
         <span class="score-label">documents exact</span></div>
       <div class="chart" id="chart-real"></div>

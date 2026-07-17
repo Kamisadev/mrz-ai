@@ -34,10 +34,30 @@ slip turn into a permanent point of accuracy. Every image needs truth and every
 truth an image: an unmeasured image would drop out of the denominator and quietly
 improve the score.
 
-No box needed. The whole image is the default, and `serve/crop.py` finds the two
-lines by their ink inside it — the same code the web reader uses, tilt and all.
-Crop roughly around the MRZ, or add `"box": [x, y, width, height]` to point at it
-inside a full page.
+### Give every full page a box
+
+```json
+{ "001_pass.jpg": { "line1": "...", "line2": "...", "box": [0, 400, 1130, 130] } }
+```
+
+**A whole passport page cannot be cropped automatically, and it will not tell you
+so by itself.** `serve/crop.py` looks for two dense bands of ink on pale paper,
+which is what a box drawn around an MRZ contains. A page has ink in the photo, the
+printed fields and the guilloche, so the two-band search fails and the region is
+halved as a guess. Measured on synthetic full pages: **0 of 4 documents, 8.8% of
+characters** — which from the outside is a recognizer that cannot read. The same
+pages with a box read **4 of 4 at 100%**.
+
+That is not a bug in `crop.py`; it is `crop.py` being used outside what it is for.
+The web reader has a human draw the box for exactly this reason (`README.md`), and
+the real set has no human, so the box goes in `truth.json`. `not_located` counts
+the pages it could not resolve, and both the tool and the dashboard say so before
+they show a score, because a score with that number above zero is about the boxes
+and not about the model.
+
+The box may be loose — that is the whole point of finding the ink inside it, and
+tilt is handled. It just may not be the entire page. Pre-cropping the images to
+the MRZ zone works equally well and needs no box at all.
 
 Measure a checkpoint against the set:
 

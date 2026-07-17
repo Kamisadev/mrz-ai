@@ -47,6 +47,16 @@ def main() -> int:
     print(f"  lines      {result.lines_read}/{2 * result.documents}")
     print(f"  characters {result.chars_read}/{result.chars_total}  ({result.char_rate:.2%})")
 
+    if result.not_located:
+        # Said before anything else, because it invalidates everything after it.
+        print(
+            f"\n  {result.not_located} of {result.documents} could not be cropped: the ink "
+            f"did not\n  resolve into two lines, so the region was halved as a guess. That is "
+            f"the\n  box being wrong, not the model. A whole passport page has ink "
+            f"everywhere —\n  give each entry a \"box\": [x, y, width, height] around the MRZ, "
+            f"or crop the\n  images to it. See docs/real.md."
+        )
+
     missed = [name for name, ok in result.per_document if not ok]
     if missed:
         print(f"\n  misread: {', '.join(missed)}")

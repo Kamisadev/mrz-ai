@@ -115,6 +115,11 @@ function renderReal(body) {
   $("real-body").hidden = !real;
   if (!real) return;
 
+  // Before the score, because it decides whether the score means anything.
+  const uncropped = real.not_located ?? 0;
+  $("real-uncropped").hidden = !uncropped;
+  if (uncropped) set("uncropped-n", `${uncropped} of ${real.documents}`);
+
   set("real-read", fmt.int(real.documents_read));
   set("real-total", `/ ${fmt.int(real.documents)}`);
 

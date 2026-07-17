@@ -37,7 +37,7 @@ import numpy as np
 
 from ..parser import fields as F
 from ..parser.charset import ALPHABET
-from ..serve.crop import Box, split_lines
+from ..serve.crop import Box, find_lines
 
 Array = np.ndarray
 
@@ -60,10 +60,12 @@ class RealDocument:
 
     name: str
     image: Array
-    #: Where the two MRZ lines are. Defaults to the whole image, which is the
-    #: right default: the box only has to contain the lines and nothing else, and
-    #: `serve.crop` finds the ink inside it. A photograph cropped roughly around
-    #: the MRZ needs no box at all.
+    #: Where the two MRZ lines are, and nothing else. May be loose — finding the
+    #: ink inside it is what makes that free — but it may not be a whole page.
+    #: `serve.crop` looks for two bands of ink on pale paper, and a page has ink in
+    #: the photo, the fields and the guilloche: 0 of 4 documents at 8.8% of
+    #: characters, measured, against 4 of 4 with a box. Defaults to the whole
+    #: image, which is right only for a photograph already cropped to the MRZ.
     box: Box
     line1: str
     line2: str
@@ -92,6 +94,17 @@ class RealResult:
     confusions: list[tuple[tuple[str, str], int]]
     #: Per document, in load order: its name and whether both lines were exact.
     per_document: list[tuple[str, bool]]
+    #: Documents whose two MRZ lines could not be found at all — the ink did not
+    #: resolve into two bands and the region was halved as a guess.
+    #:
+    #: Counted apart from misreadings because they are not one, and because the
+    #: difference is the entire reason this set exists. A whole passport page has
+    #: ink everywhere: the photo, the printed fields, the guilloche. Handed one,
+    #: `crop.py` halves it and the recognizer reads two crops of nothing — 0 of 4
+    #: documents at 8.8% of characters, measured, which looks exactly like a model
+    #: that cannot read. The same pages with a box around the MRZ read 4 of 4. A
+    #: number here means the boxes are wrong, and nothing whatever about the model.
+    not_located: int = 0
 
     @property
     def document_rate(self) -> float:
@@ -107,6 +120,8 @@ class RealResult:
             f"{self.documents_read}/{self.documents} documents  "
             f"{self.lines_read}/{2 * self.documents} lines  char {self.char_rate:.2%}"
         )
+        if self.not_located:
+            line += f"  [{self.not_located} NOT CROPPED — the boxes, not the model]"
         return f"{line}\n    confusions: {top}" if top else line
 
 
@@ -244,16 +259,25 @@ def measure_real(
     raising. It *is* unread — the reader failing to find two lines in a real
     photograph is the failure being measured, not an error in the measuring.
     """
-    documents_read = lines_read = chars_read = chars_total = 0
+    documents_read = lines_read = chars_read = chars_total = not_located = 0
     confusions: dict[tuple[str, str], int] = {}
     per_document: list[tuple[str, bool]] = []
 
     for document in documents:
         try:
-            first, second = split_lines(document.image, document.box)
-            reading = reader.read(first, second, reference_year=reference_year)
+            found = find_lines(document.image, document.box)
+            not_located += not found.banded
+            crops = tuple(
+                found.image[
+                    int(line.box.y) : int(line.box.y + line.box.height),
+                    int(line.box.x) : int(line.box.x + line.box.width),
+                ]
+                for line in found.lines
+            )
+            reading = reader.read(crops[0], crops[1], reference_year=reference_year)
             got = (reading.line1, reading.line2)
         except (ValueError, IndexError):
+            not_located += 1
             got = ("", "")
 
         ok = got == document.truth
@@ -279,4 +303,5 @@ def measure_real(
         chars_total=chars_total,
         confusions=sorted(confusions.items(), key=lambda item: -item[1]),
         per_document=per_document,
+        not_located=not_located,
     )

@@ -142,6 +142,13 @@ Specimen passports are what belongs there: real printing, real typeface, invente
 identities. The issuer's choice of OCR-B cut is the axis that broke the last
 checkpoint, and a specimen carries it without carrying anybody's passport number.
 
+Give every full page a box in `truth.json`. There is no detector, and a page is
+not an MRZ strip: `crop.py` looks for two bands of ink on pale paper, and a page
+has ink in the photo, the fields and the guilloche. Measured, a full page reads
+**0 of 4 documents at 8.8% of characters** and the same page with a box reads
+**4 of 4 at 100%** — a cropping failure wearing a recognizer's clothes, which is
+the one thing this set exists to tell apart. It is counted and reported as itself.
+
 ## Watching a run
 
 ```bash
@@ -180,7 +187,7 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-898 tests, `mypy --strict` clean.
+900 tests, `mypy --strict` clean.
 
 See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
 and `docs/synthetic.md` for the generator's — including four bugs that only showed up by

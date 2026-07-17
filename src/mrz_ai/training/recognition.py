@@ -522,6 +522,7 @@ def _real_payload(result: RealResult) -> dict[str, object]:
     return {
         "documents": result.documents,
         "documents_read": result.documents_read,
+        "not_located": result.not_located,
         "lines_read": result.lines_read,
         "char_rate": result.char_rate,
         "document_rate": result.document_rate,
