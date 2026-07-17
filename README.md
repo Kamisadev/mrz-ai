@@ -17,6 +17,7 @@ every field is a constant slice and the charset is 37 characters.
 | 4 | Candidate decoder — exact k-best × ICAO validation | **done** |
 | 5 | Export — ONNX / INT8, CLI | |
 | — | Web reader — upload, select, read | **done** (`mrz_ai.serve`) |
+| — | Training dashboard — progress, health, real set | **done** (`mrz_ai.serve.dashboard`) |
 
 ## Layout
 
@@ -27,7 +28,8 @@ src/mrz_ai/
 ├── recognition/  # 32x704 -> (44, 37) logits. ViT-tiny.
 ├── detection/    # phase 3
 ├── inference/    # phase 4 — exact k-best, ICAO ranking, MRZReader
-├── serve/        # the web reader: crop -> read -> page
+├── evaluation/   # the real set — the one grader that is not the generator
+├── serve/        # the web reader, and the training dashboard
 └── training/     # entrypoints the notebooks call
 notebooks/        # one self-contained cell per training job (RunPod)
 configs/
@@ -132,6 +134,37 @@ repository is public, and a test fails if anything under it is ever tracked. See
 `docs/real.md` for what it needs to be, and for why training on it would destroy
 the only thing it is good for.
 
+```bash
+.venv/bin/python tools/measure_real.py
+```
+
+Specimen passports are what belongs there: real printing, real typeface, invented
+identities. The issuer's choice of OCR-B cut is the axis that broke the last
+checkpoint, and a specimen carries it without carrying anybody's passport number.
+
+## Watching a run
+
+```bash
+.venv/bin/python -m mrz_ai.serve.dashboard --dir checkpoints/recognition --port 8080
+```
+
+Progress, health, the synthetic curve, and — where a real set exists — how many
+documents read exactly, with the confusion pairs. It reads a `status.json` the
+trainer writes and can do nothing else: a 45-minute rented pod is no place to put
+a web server inside the training process, so if the dashboard dies the run does
+not notice, and there is no route that writes.
+
+Two panels because they answer different questions. The synthetic one says the
+run is learning. Only the real one says a passport will read, and every look at
+it is a decision made on the test set — `docs/real.md` is explicit that this makes
+it a dev set. The dashboard's loudest state is neither: it is the banner that
+appears when the run has one cut of OCR-B, because that run is worthless and its
+loss curve looks perfect.
+
+A run that stops writing is reported stale rather than left showing its last step
+forever. A pod that is OOM-killed runs no handler, so the clock is the only honest
+signal there is.
+
 ## Training on RunPod
 
 This job is **CPU-bound, not GPU-bound**: the model is 3.4M parameters, but every sample is
@@ -147,7 +180,7 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 .venv/bin/pytest tests -q
 ```
 
-874 tests, `mypy --strict` clean.
+898 tests, `mypy --strict` clean.
 
 See `docs/parser.md` for the ICAO engine's decisions and its two validation blind spots,
 and `docs/synthetic.md` for the generator's — including four bugs that only showed up by

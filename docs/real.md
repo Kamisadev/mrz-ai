@@ -3,13 +3,50 @@
 Put real passport photographs in `real/`. Nothing else in this repository has
 ever seen one, and that is the whole reason this directory matters.
 
+These are **specimen** passports: real documents, real printing, real typeface,
+invented identities. That combination is what makes the set both worth having and
+safe to have. The cut of OCR-B is whatever the issuer's press actually used —
+which is the axis that broke the last checkpoint — while the name and number
+belong to nobody, so the set can travel to a rented pod without a passport
+holder's data going with it. Genuine passports would buy nothing this does not,
+and would cost a great deal more to be wrong about.
+
 ```text
 real/
 ├── images/
-│   ├── 001.jpg
-│   └── 002.jpg
-└── truth.json     {"001.jpg": {"line1": "P<UTO...", "line2": "L898902C3..."}}
+│   ├── 001_pass.jpg
+│   └── 002_pass.png
+└── truth.json
 ```
+
+```json
+{
+  "001_pass.jpg": {
+    "line1": "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<",
+    "line2": "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+  }
+}
+```
+
+Both lines, 44 characters each, `<` for every filler. A short line scores as a
+misreading forever, so the loader refuses one rather than letting a transcription
+slip turn into a permanent point of accuracy. Every image needs truth and every
+truth an image: an unmeasured image would drop out of the denominator and quietly
+improve the score.
+
+No box needed. The whole image is the default, and `serve/crop.py` finds the two
+lines by their ink inside it — the same code the web reader uses, tilt and all.
+Crop roughly around the MRZ, or add `"box": [x, y, width, height]` to point at it
+inside a full page.
+
+Measure a checkpoint against the set:
+
+```bash
+.venv/bin/python tools/measure_real.py
+```
+
+Or have training read it as it goes — `TrainConfig(real_dir=Path("real"))`, shown
+on the dashboard. See "Watching it" below for what that costs.
 
 `real/` is ignored by git as a whole directory, with no negated pattern inside
 it. This repository is public. `tests/test_real_data_stays_out_of_git.py` fails
@@ -38,6 +75,28 @@ the fix belongs in the generator — find the axis it never randomized, add it,
 retrain on synthetic data, and come back to measure. That is what happened with
 the fonts, and it recovered 28% of documents at once rather than one image at a
 time.
+
+## Watching it during a run
+
+`TrainConfig(real_dir=...)` reads the set every `real_every` steps and puts the
+count on the dashboard. Useful, and not free, and the cost is worth naming.
+
+A number you look at is a number you act on. Killing a run because this panel
+dipped is selection on the test set, done by hand and one decision at a time. The
+textbook answer is to split the set — a dev half you may watch and burn, a test
+half touched once — and with a handful of documents there is nothing to split.
+
+So this set is a **dev set**, and the panel says so. That is not a licence, it is
+an admission: after the first run it steers, its number is no longer an unbiased
+estimate of anything, and the sealed 50–100 that `README.md` asks for remains a
+separate thing that does not exist. `real_every` defaults to 5,000 steps rather
+than the synthetic eval's 1,000 for this reason and no other — it costs a second
+to run.
+
+The panel shows counts, per-document ticks and confusion pairs. Never the decoded
+MRZ: these identities are invented, but the payload is served over a port, and
+the day somebody points the same panel at a genuine passport is not the day to
+find out that the page prints its number.
 
 ## What the set needs to be
 

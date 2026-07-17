@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MRZ Training</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>MRZ Training</h1>
+      <p class="sub" id="watching">&mdash;</p>
+    </div>
+  </div>
+  <div class="meta">
+    <span class="dot" id="run-dot" aria-hidden="true"></span>
+    <span id="run-state">Connecting</span>
+  </div>
+</header>
+
+<main class="board">
+
+  <!-- Nothing here is authoritative about a run's health except the clock. A pod
+       that is taken away leaves the last status on disk saying "training", so the
+       page says stale rather than repeating a step count that stopped moving. -->
+  <div class="alert" id="stale" hidden>
+    No update for <span id="stale-age">a while</span>. The run may have been killed
+    &mdash; the numbers below are the last it wrote, not what it is doing now.
+  </div>
+  <div class="alert bad" id="failed" hidden>
+    <strong>The run failed.</strong> <span id="failed-why"></span>
+  </div>
+  <div class="alert" id="one-font" hidden>
+    <strong>One cut of OCR-B.</strong> This run is learning one vendor's outlines
+    rather than the letters, and nothing in the loss curve will say so. The last
+    checkpoint trained this way scored 99.5% and misread real passports. Stop it.
+  </div>
+
+  <section class="panel wide">
+    <div class="progress-head">
+      <div>
+        <span class="label">Step</span>
+        <span class="big" id="step">0</span>
+        <span class="of" id="total">/ 0</span>
+      </div>
+      <div class="right">
+        <span class="label">Stage</span>
+        <span class="stage" id="stage">&mdash;</span>
+      </div>
+    </div>
+    <div class="track"><div class="fill" id="fill"></div></div>
+    <dl class="strip">
+      <div><dt>Loss</dt><dd id="loss">&mdash;</dd></div>
+      <div><dt>Learning rate</dt><dd id="lr">&mdash;</dd></div>
+      <div><dt>Rate</dt><dd id="rate">&mdash;</dd></div>
+      <div><dt>Elapsed</dt><dd id="elapsed">&mdash;</dd></div>
+      <div><dt>Remaining</dt><dd id="eta">&mdash;</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel">
+    <h2>Synthetic accuracy</h2>
+    <p class="note">
+      Full severity, held out by seed. Graded by the engine that drew the exam
+      &mdash; it says the run is learning, not that a passport will read.
+    </p>
+    <div class="chart" id="chart-synthetic"></div>
+    <dl class="strip">
+      <div><dt>Character</dt><dd id="char">&mdash;</dd></div>
+      <div><dt>Line</dt><dd id="line">&mdash;</dd></div>
+      <div><dt>Eval loss</dt><dd id="eval-loss">&mdash;</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel">
+    <h2>Real set <span class="chip" id="real-chip">dev set</span></h2>
+    <p class="note" id="real-note">
+      Specimen passports: real printing, invented identities. The only number here
+      the generator did not grade. Raw weights, so the shipped checkpoint's EMA is
+      a shade better than this.
+    </p>
+    <div class="real-empty" id="real-empty">No real set on this run.</div>
+    <div id="real-body" hidden>
+      <div class="score"><span id="real-read">0</span><span class="denom" id="real-total">/ 0</span>
+        <span class="score-label">documents exact</span></div>
+      <div class="chart" id="chart-real"></div>
+      <div class="ticks" id="real-ticks"></div>
+      <h3>Confusions</h3>
+      <p class="note">
+        What the generator never drew anything to separate. A pair here names the
+        axis to add, not a stupid model.
+      </p>
+      <ul class="confusions" id="real-confusions"></ul>
+    </div>
+  </section>
+
+  <section class="panel wide">
+    <h2>Run</h2>
+    <dl class="strip health">
+      <div><dt>Device</dt><dd id="device">&mdash;</dd></div>
+      <div><dt>Precision</dt><dd id="precision">&mdash;</dd></div>
+      <div><dt>Parameters</dt><dd id="params">&mdash;</dd></div>
+      <div><dt>Workers</dt><dd id="workers">&mdash;</dd></div>
+      <div><dt>Fonts</dt><dd id="fonts">&mdash;</dd></div>
+    </dl>
+  </section>
+
+</main>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

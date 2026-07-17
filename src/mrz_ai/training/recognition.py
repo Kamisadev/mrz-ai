@@ -26,11 +26,13 @@ import torch
 import torch.nn.functional as functional
 from torch.utils.data import DataLoader, Dataset
 
+from ..evaluation.real import RealDocument, RealResult, load_real_set, measure_real
 from ..recognition.geometry import INPUT, MODEL, InputGeometry, ModelGeometry
 from ..recognition.model import MRZRecognizer, count_parameters
 from ..recognition.preprocess import prepare
 from ..recognition.tokenizer import encode
 from ..synthetic.dataset import DatasetConfig, MRZLineDataset
+from .status import Status, StatusWriter
 
 
 def usable_cores() -> int:
@@ -93,6 +95,17 @@ class TrainConfig:
     eval_every: int = 1_000
     eval_batches: int = 8
     log_every: int = 100
+
+    #: How often the real set is read, if there is one. Rarer than the synthetic
+    #: eval on purpose. It is not a cost problem — a handful of documents is a
+    #: second — it is that this is the only measurement here that is not graded by
+    #: the generator, and every look at it is a chance to act on it. Watching a
+    #: number and killing the run when it dips is selection on the test set, done
+    #: by hand. See docs/real.md; the set is a dev set and this is why.
+    real_every: int = 5_000
+    #: Where the real set lives. None disables it, which is the default: nobody
+    #: else's checkout has one.
+    real_dir: Path | None = None
 
     output_dir: Path = Path("checkpoints/recognition")
     curriculum: tuple[Stage, ...] = DEFAULT_CURRICULUM
@@ -198,6 +211,34 @@ def evaluate(
         line_accuracy=correct_lines / max(total_lines, 1),
         loss=float(np.mean(losses)) if losses else float("nan"),
     )
+
+
+def read_real_set(
+    model: MRZRecognizer,
+    documents: list[RealDocument],
+    geometry: InputGeometry,
+    device: torch.device,
+) -> RealResult:
+    """Read the real set with the weights as they stand right now.
+
+    The raw weights, not the EMA's — matching `evaluate`, so the two panels on the
+    dashboard are the same model and a gap between them means something. The
+    shipped checkpoint uses EMA and is reliably a shade better, so this number is
+    a floor.
+
+    `MRZReader.__post_init__` calls `.eval()` on whatever it is handed, and it is
+    handed the model that is being trained. Left there, dropout would stay off for
+    the rest of the run and the loss would quietly improve for a reason that has
+    nothing to do with learning. Hence the restore.
+    """
+    from ..inference.pipeline import MRZReader
+
+    was_training = model.training
+    try:
+        reader = MRZReader(model=model, input_geometry=geometry, k=8, device=device)
+        return measure_real(reader, documents)
+    finally:
+        model.train(was_training)
 
 
 def _learning_rate(step: int, config: TrainConfig) -> float:
@@ -320,78 +361,173 @@ def train_recognition(config: TrainConfig | None = None) -> Path:
     if len(fonts) < 2:
         print("  WARNING: one font means the model learns these outlines, not the "
               "letters. Pull the repo; see tools/font_gap.py.")
+
+    # The real set, if this machine has one. Loaded before the first step rather
+    # than at the first check: a broken truth.json must fail now, not 5,000 steps
+    # in, and a set that is silently absent must say so while there is still time
+    # to do something about it.
+    real_documents: list[RealDocument] = []
+    if config.real_dir is not None:
+        real_documents = load_real_set(config.real_dir)
+        print(f"real set: {len(real_documents)} document(s) from {config.real_dir}, "
+              f"read every {config.real_every} steps — measured, never trained on")
     print()
 
     history: list[dict[str, object]] = []
     step = 0
     started = time.perf_counter()
 
-    for stage_index, stage in enumerate(config.curriculum):
-        print(f"--- stage {stage.name}: severity {stage.severity}, {stage.steps} steps")
-        # A seed per stage, so a stage is a fresh set of documents rather than
-        # the previous stage's photographed harder. Reusing one seed would show
-        # the model the same passports four times over, and it would be the
-        # earlier stages' identities it memorised.
-        loader = _loader(
-            stage.severity,
-            config,
-            seed=config.seed + stage_index * 104_729,
-            steps=stage.steps,
-        )
-        stage_step = 0
-
-        while stage_step < stage.steps:
-            for images, labels in loader:
-                if stage_step >= stage.steps:
-                    break
-                step += 1
-                stage_step += 1
-
-                for group in optimizer.param_groups:
-                    group["lr"] = _learning_rate(step, config)
-
-                images, labels = images.to(device, non_blocking=True), labels.to(device)
-                with torch.amp.autocast("cuda", enabled=use_amp, dtype=amp_dtype):
-                    logits = model(images)
-                    loss = functional.cross_entropy(
-                        logits.reshape(-1, logits.shape[-1]),
-                        labels.reshape(-1),
-                        label_smoothing=config.label_smoothing,
-                    )
-
-                optimizer.zero_grad(set_to_none=True)
-                scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-                scaler.step(optimizer)
-                scaler.update()
-                ema.update(model)
-
-                if step % config.log_every == 0:
-                    rate = step / (time.perf_counter() - started)
-                    print(f"  step {step:6d}  loss {loss.item():.4f}  "
-                          f"lr {optimizer.param_groups[0]['lr']:.2e}  {rate:.1f} it/s")
-
-                if step % config.eval_every == 0:
-                    result = evaluate(model, validation, device, config.eval_batches)
-                    print(f"  eval  {result}")
-                    history.append({"step": step, "stage": stage.name, **asdict(result)})
-
-    result = evaluate(model, validation, device, config.eval_batches * 2)
-    print(f"\nfinal (raw weights): {result}")
-
-    checkpoint = output_dir / "recognition.pt"
-    torch.save(
-        {
-            "model": model.state_dict(),
-            "ema": ema.state_dict(model),
-            "input_geometry": asdict(config.input_geometry),
-            "model_geometry": asdict(config.model_geometry),
-            "history": history,
-            "final": asdict(result),
-        },
-        checkpoint,
+    status = StatusWriter(
+        output_dir,
+        Status(
+            state="training",
+            total_steps=config.total_steps,
+            stages=len(config.curriculum),
+            device=device.type,
+            hardware=hardware,
+            precision=precision,
+            parameters=count_parameters(model) / 1e6,
+            workers=config.num_workers,
+            cores=usable_cores(),
+            fonts=[Path(path).name for path in fonts],
+            started_at=time.time(),
+            updated_at=time.time(),
+        ),
     )
-    (output_dir / "history.json").write_text(json.dumps(history, indent=2))
-    print(f"saved: {checkpoint}")
-    return checkpoint
+
+    # A run that dies must say so on the page. The except is the polite half:
+    # it catches an exception, and catches nothing at all when the pod is
+    # OOM-killed or simply taken away, which is the commoner ending. The
+    # dashboard's staleness check is what covers that, and this covers the
+    # cases where there is a reason worth showing.
+    try:
+        for stage_index, stage in enumerate(config.curriculum):
+            print(f"--- stage {stage.name}: severity {stage.severity}, {stage.steps} steps")
+            # A seed per stage, so a stage is a fresh set of documents rather than
+            # the previous stage's photographed harder. Reusing one seed would show
+            # the model the same passports four times over, and it would be the
+            # earlier stages' identities it memorised.
+            loader = _loader(
+                stage.severity,
+                config,
+                seed=config.seed + stage_index * 104_729,
+                steps=stage.steps,
+            )
+            stage_step = 0
+
+            while stage_step < stage.steps:
+                for images, labels in loader:
+                    if stage_step >= stage.steps:
+                        break
+                    step += 1
+                    stage_step += 1
+
+                    for group in optimizer.param_groups:
+                        group["lr"] = _learning_rate(step, config)
+
+                    images, labels = images.to(device, non_blocking=True), labels.to(device)
+                    with torch.amp.autocast("cuda", enabled=use_amp, dtype=amp_dtype):
+                        logits = model(images)
+                        loss = functional.cross_entropy(
+                            logits.reshape(-1, logits.shape[-1]),
+                            labels.reshape(-1),
+                            label_smoothing=config.label_smoothing,
+                        )
+
+                    optimizer.zero_grad(set_to_none=True)
+                    scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    ema.update(model)
+
+                    if step % config.log_every == 0:
+                        elapsed = time.perf_counter() - started
+                        rate = step / elapsed
+                        print(f"  step {step:6d}  loss {loss.item():.4f}  "
+                              f"lr {optimizer.param_groups[0]['lr']:.2e}  {rate:.1f} it/s")
+                        status.update(
+                            step=step,
+                            stage=stage.name,
+                            stage_index=stage_index,
+                            loss=loss.item(),
+                            learning_rate=optimizer.param_groups[0]["lr"],
+                            rate=rate,
+                            elapsed_seconds=elapsed,
+                            eta_seconds=(config.total_steps - step) / rate if rate > 0 else None,
+                        )
+
+                    if step % config.eval_every == 0:
+                        result = evaluate(model, validation, device, config.eval_batches)
+                        print(f"  eval  {result}")
+                        entry = {"step": step, "stage": stage.name, **asdict(result)}
+                        history.append(entry)
+                        status.status.history.append(entry)
+                        status.write()
+
+                    if real_documents and step % config.real_every == 0:
+                        real = read_real_set(model, real_documents, config.input_geometry, device)
+                        print(f"  real  {real}")
+                        status.status.real = _real_payload(real)
+                        status.status.real_history.append(
+                            {"step": step, "documents_read": real.documents_read,
+                             "documents": real.documents, "char_rate": real.char_rate}
+                        )
+                        status.write()
+
+        result = evaluate(model, validation, device, config.eval_batches * 2)
+        print(f"\nfinal (raw weights): {result}")
+
+        if real_documents:
+            real = read_real_set(model, real_documents, config.input_geometry, device)
+            print(f"final real set:      {real}")
+            status.status.real = _real_payload(real)
+
+        checkpoint = output_dir / "recognition.pt"
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "ema": ema.state_dict(model),
+                "input_geometry": asdict(config.input_geometry),
+                "model_geometry": asdict(config.model_geometry),
+                "history": history,
+                "final": asdict(result),
+            },
+            checkpoint,
+        )
+        (output_dir / "history.json").write_text(json.dumps(history, indent=2))
+        status.update(state="finished", step=config.total_steps, updated_at=time.time())
+        print(f"saved: {checkpoint}")
+        return checkpoint
+    except BaseException as error:
+        status.update(
+            state="failed",
+            error=f"{type(error).__name__}: {error}",
+            updated_at=time.time(),
+        )
+        raise
+
+
+def _real_payload(result: RealResult) -> dict[str, object]:
+    """The real result as the dashboard shows it.
+
+    The decoded MRZ is deliberately not in here. These are specimen documents and
+    their identities are invented, so nothing would leak today — but this payload
+    is served over a port, and the day somebody points the same panel at a genuine
+    passport is not the day to discover that the page prints its number. Counts,
+    per-document ticks, and confusion pairs are what the panel is for anyway: a
+    confusion pair is what names the axis the generator is missing.
+    """
+    return {
+        "documents": result.documents,
+        "documents_read": result.documents_read,
+        "lines_read": result.lines_read,
+        "char_rate": result.char_rate,
+        "document_rate": result.document_rate,
+        "confusions": [
+            {"want": want, "got": got, "count": count}
+            for (want, got), count in result.confusions[:8]
+        ],
+        "per_document": [{"name": name, "ok": ok} for name, ok in result.per_document],
+    }
